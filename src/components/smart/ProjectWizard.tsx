@@ -163,7 +163,7 @@ export function ProjectWizard() {
     <div className="wizard-progress"><span style={{ width: progress }} /></div>
     {savedMessage && <button type="button" className="saved-toast" onClick={() => setSavedMessage("")}><Check size={14} />{savedMessage}</button>}
 
-    {step === 1 && <div className="wizard-stage-layout">
+    {step === 1 && <div className="wizard-stage-layout wizard-stage-layout-fluid">
       <WizardVisual image="/assets/wizard-environment.webp" title="نقشه اولیه پوشش" description="ابعاد و نوع محیط روی تعداد دوربین، مقاومت بدنه و پیچیدگی کابل‌کشی اثر دارد." tips={["متراژ تقریبی کافی است", "تعداد طبقات را جدا حساب کنید", "ورودی‌های مهم را فراموش نکنید"]} />
       <div className="wizard-step">
         <div className="wizard-copy align-start"><p className="eyebrow">شروع طراحی</p><h1>پروژه را بهتر بشناسیم</h1><p>می‌توانید از یک سناریوی آماده شروع و جزئیات را بعداً ویرایش کنید.</p></div>
@@ -207,7 +207,7 @@ export function ProjectWizard() {
       </div>
     </div>}
 
-    {step === 2 && <div className="wizard-stage-layout">
+    {step === 2 && <div className="wizard-stage-layout wizard-stage-layout-fluid">
       <WizardVisual image="/assets/wizard-environment.webp" title="هندسه واقعی هر ناحیه" description="PPM از عرض صحنه و رزولوشن و پوشش اپتیکی از فاصله، ارتفاع و Tilt محاسبه می‌شود." tips={["Face و ANPR هدف‌های مستقل‌اند", "عرض صحنه، کل عرض قابل مشاهده است", "ارتفاع هدف برای چهره حدود ۱٫۷ متر است"]} />
       <div className="wizard-step">
         <div className="wizard-copy align-start"><p className="eyebrow">ویرایش کامل پروژه</p><h1>دوربین‌ها کجا نصب می‌شوند؟</h1><p>هر ردیف یک ناحیه مستقل است. جمع دوربین‌ها و فضای بیرونی خودکار محاسبه می‌شود.</p></div>

@@ -5605,7 +5605,7 @@ h3 {
 }
 
 .advanced-wizard {
-  width: min(1140px, 100%);
+  width: 100%;
 }
 
 .wizard-persistence,
@@ -5927,6 +5927,23 @@ h3 {
   grid-template-columns: minmax(300px, .78fr) minmax(0, 1.35fr);
   gap: 22px;
   align-items: start;
+}
+
+.wizard-stage-layout-fluid .wizard-step {
+  display: contents;
+}
+
+.wizard-stage-layout-fluid > .wizard-visual {
+  grid-column: 1;
+  grid-row: 1 / span 4;
+}
+
+.wizard-stage-layout-fluid > .wizard-step > :nth-child(-n + 4) {
+  grid-column: 2;
+}
+
+.wizard-stage-layout-fluid > .wizard-step > :nth-child(n + 5) {
+  grid-column: 1 / -1;
 }
 
 .wizard-stage-layout .wizard-step {
@@ -6440,6 +6457,19 @@ h3 {
 @media (max-width: 940px) {
   .wizard-stage-layout {
     grid-template-columns: 1fr;
+  }
+
+  .wizard-stage-layout-fluid .wizard-step {
+    display: grid;
+  }
+
+  .wizard-stage-layout-fluid > .wizard-visual {
+    grid-column: auto;
+    grid-row: auto;
+  }
+
+  .wizard-stage-layout-fluid > .wizard-step > :nth-child(n) {
+    grid-column: auto;
   }
 
   .wizard-visual {
