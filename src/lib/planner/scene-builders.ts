@@ -1,7 +1,7 @@
 import type * as THREE_NS from "three";
-import type { FloorPlan, PlanObstacle, PlanWall, Vec2 } from "@/src/domain/planner/types";
+import type { FloorPlan, PlanBackdrop, PlanDoor, PlanObstacle, PlanWall, Vec2 } from "@/src/domain/planner/types";
 import type { CameraCoverage } from "@/src/lib/planner/coverage";
-import { obstacleCorners } from "@/src/lib/planner/geometry";
+import { obstacleCorners, type RightAngleCorner } from "@/src/lib/planner/geometry";
 
 /**
  * Mesh construction for the plan scene.
@@ -26,12 +26,17 @@ export const palette = {
 };
 
 export function disposeGroup(group: THREE_NS.Group) {
+  const disposeMaterial = (item: THREE_NS.Material) => {
+    const texture = (item as THREE_NS.MeshBasicMaterial).map;
+    texture?.dispose();
+    item.dispose();
+  };
   group.traverse((child) => {
     const mesh = child as THREE_NS.Mesh;
     if (mesh.geometry) mesh.geometry.dispose();
     const material = mesh.material as THREE_NS.Material | THREE_NS.Material[] | undefined;
-    if (Array.isArray(material)) material.forEach((item) => item.dispose());
-    else material?.dispose();
+    if (Array.isArray(material)) material.forEach(disposeMaterial);
+    else if (material) disposeMaterial(material);
   });
   group.clear();
 }
@@ -55,6 +60,163 @@ export function buildWallMesh(THREE: ThreeModule, wall: PlanWall, selected: bool
   mesh.rotation.y = -Math.atan2(dz, dx);
   mesh.userData = { kind: "wall", id: wall.id };
   return mesh;
+}
+
+function wallSectionMesh(
+  THREE: ThreeModule,
+  wall: PlanWall,
+  startM: number,
+  endM: number,
+  bottomM: number,
+  heightM: number,
+  selected: boolean
+): THREE_NS.Mesh | null {
+  const span = Math.hypot(wall.b.x - wall.a.x, wall.b.z - wall.a.z);
+  const sectionLength = endM - startM;
+  if (span < 0.01 || sectionLength < 0.01 || heightM < 0.01) return null;
+  const ux = (wall.b.x - wall.a.x) / span;
+  const uz = (wall.b.z - wall.a.z) / span;
+  const centerM = (startM + endM) / 2;
+  const mesh = new THREE.Mesh(
+    new THREE.BoxGeometry(sectionLength, heightM, Math.max(0.05, wall.thicknessM)),
+    new THREE.MeshStandardMaterial({
+      color: selected ? palette.wallSelected : wall.blocksView ? palette.wall : palette.wallGlass,
+      transparent: !wall.blocksView,
+      opacity: wall.blocksView ? 1 : 0.45,
+      roughness: 0.85,
+      metalness: 0.05
+    })
+  );
+  mesh.position.set(wall.a.x + ux * centerM, bottomM + heightM / 2, wall.a.z + uz * centerM);
+  mesh.rotation.y = -Math.atan2(uz, ux);
+  mesh.userData = { kind: "wall", id: wall.id };
+  return mesh;
+}
+
+/** Splits a wall around its attached doors, including the lintel above each opening. */
+export function buildWallWithDoors(
+  THREE: ThreeModule,
+  wall: PlanWall,
+  doors: PlanDoor[],
+  selected: boolean
+): THREE_NS.Object3D {
+  if (!doors.length) return buildWallMesh(THREE, wall, selected);
+  const group = new THREE.Group();
+  const span = Math.hypot(wall.b.x - wall.a.x, wall.b.z - wall.a.z);
+  const openings = doors
+    .map((door) => {
+      const centerM = Math.max(0, Math.min(span, door.offset * span));
+      return {
+        door,
+        startM: Math.max(0, centerM - door.widthM / 2),
+        endM: Math.min(span, centerM + door.widthM / 2)
+      };
+    })
+    .sort((first, second) => first.startM - second.startM);
+
+  let cursorM = 0;
+  for (const opening of openings) {
+    const solid = wallSectionMesh(THREE, wall, cursorM, opening.startM, 0, wall.heightM, selected);
+    if (solid) group.add(solid);
+    const lintelHeightM = Math.max(0, wall.heightM - opening.door.heightM);
+    const lintel = wallSectionMesh(
+      THREE,
+      wall,
+      opening.startM,
+      opening.endM,
+      opening.door.heightM,
+      lintelHeightM,
+      selected
+    );
+    if (lintel) group.add(lintel);
+    cursorM = Math.max(cursorM, opening.endM);
+  }
+  const tail = wallSectionMesh(THREE, wall, cursorM, span, 0, wall.heightM, selected);
+  if (tail) group.add(tail);
+  group.userData = { kind: "wall", id: wall.id };
+  return group;
+}
+
+/** Architectural top-view swing symbol plus a framed, half-open 3D door leaf. */
+export function buildDoorMesh(
+  THREE: ThreeModule,
+  door: PlanDoor,
+  wall: PlanWall,
+  selected: boolean
+): THREE_NS.Object3D {
+  const group = new THREE.Group();
+  const dx = wall.b.x - wall.a.x;
+  const dz = wall.b.z - wall.a.z;
+  const span = Math.hypot(dx, dz) || 0.01;
+  const u = { x: dx / span, z: dz / span };
+  const normal = { x: -u.z, z: u.x };
+  const center = { x: wall.a.x + dx * door.offset, z: wall.a.z + dz * door.offset };
+  const halfWidth = Math.min(door.widthM, span) / 2;
+  const hingeSign = door.hinge === "start" ? -1 : 1;
+  const hinge = { x: center.x + u.x * halfWidth * hingeSign, z: center.z + u.z * halfWidth * hingeSign };
+  const closedDirection = { x: -u.x * hingeSign, z: -u.z * hingeSign };
+  const angleRad = (Math.max(0, Math.min(90, door.openAngleDeg)) * Math.PI) / 180;
+  const openDirection = {
+    x: closedDirection.x * Math.cos(angleRad) + normal.x * Math.sin(angleRad),
+    z: closedDirection.z * Math.cos(angleRad) + normal.z * Math.sin(angleRad)
+  };
+  const frameMaterial = new THREE.MeshStandardMaterial({ color: 0x7c4a2d, roughness: 0.55, metalness: 0.05 });
+  const leafMaterial = new THREE.MeshStandardMaterial({
+    color: selected ? 0xf59e0b : 0xb86f3c,
+    roughness: 0.48,
+    metalness: 0.03
+  });
+
+  for (const sign of [-1, 1]) {
+    const post = new THREE.Mesh(new THREE.BoxGeometry(0.1, door.heightM, 0.14), frameMaterial);
+    post.position.set(center.x + u.x * halfWidth * sign, door.heightM / 2, center.z + u.z * halfWidth * sign);
+    post.rotation.y = -Math.atan2(u.z, u.x);
+    group.add(post);
+  }
+  const header = new THREE.Mesh(new THREE.BoxGeometry(door.widthM + 0.18, 0.12, 0.14), frameMaterial);
+  header.position.set(center.x, door.heightM + 0.06, center.z);
+  header.rotation.y = -Math.atan2(u.z, u.x);
+  group.add(header);
+
+  const leaf = new THREE.Mesh(new THREE.BoxGeometry(door.widthM, door.heightM - 0.08, 0.07), leafMaterial);
+  leaf.position.set(
+    hinge.x + openDirection.x * door.widthM / 2,
+    (door.heightM - 0.08) / 2,
+    hinge.z + openDirection.z * door.widthM / 2
+  );
+  leaf.rotation.y = -Math.atan2(openDirection.z, openDirection.x);
+  group.add(leaf);
+
+  const handle = new THREE.Mesh(
+    new THREE.SphereGeometry(0.055, 12, 8),
+    new THREE.MeshStandardMaterial({ color: 0xd6a83d, roughness: 0.22, metalness: 0.8 })
+  );
+  handle.position.set(
+    hinge.x + openDirection.x * door.widthM * 0.85 + normal.x * 0.055,
+    Math.min(1.05, door.heightM * 0.52),
+    hinge.z + openDirection.z * door.widthM * 0.85 + normal.z * 0.055
+  );
+  group.add(handle);
+
+  const arcPoints: THREE_NS.Vector3[] = [];
+  for (let index = 0; index <= 24; index += 1) {
+    const radians = angleRad * (index / 24);
+    const direction = {
+      x: closedDirection.x * Math.cos(radians) + normal.x * Math.sin(radians),
+      z: closedDirection.z * Math.cos(radians) + normal.z * Math.sin(radians)
+    };
+    arcPoints.push(new THREE.Vector3(hinge.x + direction.x * door.widthM, 0.18, hinge.z + direction.z * door.widthM));
+  }
+  const arc = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints(arcPoints),
+    new THREE.LineBasicMaterial({ color: selected ? 0xf59e0b : 0x9a5b2c, depthTest: false })
+  );
+  arc.renderOrder = 25;
+  group.add(arc);
+
+  group.userData = { kind: "door", id: door.id };
+  group.traverse((child) => { child.userData = { kind: "door", id: door.id }; });
+  return group;
 }
 
 export function buildObstacleMesh(THREE: ThreeModule, obstacle: PlanObstacle, selected: boolean): THREE_NS.Object3D {
@@ -192,10 +354,7 @@ export function buildCoverageMesh(THREE: ThreeModule, coverage: CameraCoverage):
   return group;
 }
 
-export function buildBackdrop(THREE: ThreeModule, floor: FloorPlan): THREE_NS.Object3D | null {
-  const backdrop = floor.backdrop;
-  if (!backdrop) return null;
-
+export function buildBackdropMesh(THREE: ThreeModule, backdrop: PlanBackdrop): THREE_NS.Object3D | null {
   const widthM = backdrop.widthPx * backdrop.metresPerPixel;
   const depthM = backdrop.heightPx * backdrop.metresPerPixel;
   if (!(widthM > 0) || !(depthM > 0)) return null;
@@ -215,14 +374,62 @@ export function buildBackdrop(THREE: ThreeModule, floor: FloorPlan): THREE_NS.Ob
   return mesh;
 }
 
-export function buildPreviewLine(THREE: ThreeModule, from: Vec2, to: Vec2): THREE_NS.Object3D {
+export function buildBackdrop(THREE: ThreeModule, floor: FloorPlan): THREE_NS.Object3D | null {
+  return floor.backdrop ? buildBackdropMesh(THREE, floor.backdrop) : null;
+}
+
+export function buildPreviewLine(
+  THREE: ThreeModule,
+  from: Vec2,
+  to: Vec2,
+  color = palette.preview
+): THREE_NS.Object3D {
   return new THREE.Line(
     new THREE.BufferGeometry().setFromPoints([
       new THREE.Vector3(from.x, 0.1, from.z),
       new THREE.Vector3(to.x, 0.1, to.z)
     ]),
-    new THREE.LineDashedMaterial({ color: palette.preview, dashSize: 0.4, gapSize: 0.25 })
+    new THREE.LineDashedMaterial({ color, dashSize: 0.4, gapSize: 0.25 })
   );
+}
+
+export function buildRightAngleMarker(
+  THREE: ThreeModule,
+  { corner, armA, armB }: RightAngleCorner
+): THREE_NS.Object3D {
+  const size = 0.48;
+  const first = { x: corner.x + armA.x * size, z: corner.z + armA.z * size };
+  const inner = { x: first.x + armB.x * size, z: first.z + armB.z * size };
+  const second = { x: corner.x + armB.x * size, z: corner.z + armB.z * size };
+  const line = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(first.x, 0.16, first.z),
+      new THREE.Vector3(inner.x, 0.16, inner.z),
+      new THREE.Vector3(second.x, 0.16, second.z)
+    ]),
+    new THREE.LineBasicMaterial({ color: 0xb7791f, depthTest: false })
+  );
+  line.renderOrder = 24;
+  return line;
+}
+
+export function buildSmartGuideLine(THREE: ThreeModule, from: Vec2, to: Vec2): THREE_NS.Object3D {
+  const line = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(from.x, 0.13, from.z),
+      new THREE.Vector3(to.x, 0.13, to.z)
+    ]),
+    new THREE.LineDashedMaterial({
+      color: 0x0ea5a8,
+      dashSize: 0.22,
+      gapSize: 0.14,
+      transparent: true,
+      opacity: 0.95
+    })
+  );
+  line.computeLineDistances();
+  line.renderOrder = 20;
+  return line;
 }
 
 export function buildPreviewRect(THREE: ThreeModule, from: Vec2, to: Vec2): THREE_NS.Object3D {

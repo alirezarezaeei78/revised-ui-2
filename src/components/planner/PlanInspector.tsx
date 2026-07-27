@@ -1,7 +1,7 @@
 "use client";
 
-import { Camera, Compass, Ruler, Trash2 } from "lucide-react";
-import type { FloorPlan, PlanSelection } from "@/src/domain/planner/types";
+import { BrickWall, Camera, Compass, Cuboid, DoorOpen, Ruler, Trash2 } from "lucide-react";
+import type { FloorPlan, PlanDefaults, PlanSelection, PlanTool } from "@/src/domain/planner/types";
 import type { SurveillanceTask } from "@/src/domain/catalog/types";
 import { cameraFovDeg, computeCameraCoverage, focalForTask } from "@/src/lib/planner/coverage";
 import { collectOccluders } from "@/src/lib/planner/geometry";
@@ -29,20 +29,72 @@ const megapixelOptions = [2, 3, 4, 5, 6, 8, 12];
 export function PlanInspector({
   floor,
   selection,
+  activeTool,
+  defaults,
+  onDefaultsChange,
   onFloorChange,
   onSelect
 }: {
   floor: FloorPlan;
   selection: PlanSelection;
+  activeTool: PlanTool;
+  defaults: PlanDefaults;
+  onDefaultsChange: (patch: Partial<PlanDefaults>) => void;
   onFloorChange: (floor: FloorPlan) => void;
   onSelect: (selection: PlanSelection) => void;
 }) {
   if (!selection) {
+    if (activeTool === "wall") {
+      return (
+        <aside className="plan-inspector plan-tool-inspector">
+          <header><BrickWall size={18} aria-hidden="true" /><strong>مشخصات دیوار در حال رسم</strong></header>
+          <p>این مقادیر روی قطعه‌های جدید اعمال می‌شوند و بعداً هر دیوار جداگانه قابل ویرایش است.</p>
+          <NumberField label="ارتفاع دیوار" unit="متر" value={defaults.wallHeightM} min={0.3} max={12} step={0.1} onChange={(wallHeightM) => onDefaultsChange({ wallHeightM })} />
+          <NumberField label="ضخامت دیوار" unit="متر" value={defaults.wallThicknessM} min={0.05} max={1} step={0.05} onChange={(wallThicknessM) => onDefaultsChange({ wallThicknessM })} />
+          <div className="plan-tool-tip"><Ruler size={15} aria-hidden="true" /><span>برای پایان زنجیره دیوار، کلیک راست یا Esc را بزنید.</span></div>
+        </aside>
+      );
+    }
+
+    if (activeTool === "obstacle") {
+      return (
+        <aside className="plan-inspector plan-tool-inspector">
+          <header><Cuboid size={18} aria-hidden="true" /><strong>مشخصات مانع جدید</strong></header>
+          <p>طول و عرض با دو کلیک روی نقشه تعیین می‌شوند.</p>
+          <NumberField label="ارتفاع پیش‌فرض" unit="متر" value={defaults.obstacleHeightM} min={0.1} max={12} step={0.1} onChange={(obstacleHeightM) => onDefaultsChange({ obstacleHeightM })} />
+          <div className="plan-tool-tip"><span>نقطه اول و سپس گوشه مقابل مانع را انتخاب کنید.</span></div>
+        </aside>
+      );
+    }
+
+    if (activeTool === "camera") {
+      return (
+        <aside className="plan-inspector plan-tool-inspector">
+          <header><Camera size={18} aria-hidden="true" /><strong>مشخصات دوربین جدید</strong></header>
+          <p>ارتفاع زیر روی دوربین‌های جدید اعمال می‌شود؛ لنز و جهت هر دوربین بعد از جای‌گذاری قابل تنظیم است.</p>
+          <NumberField label="ارتفاع نصب" unit="متر" value={defaults.cameraMountHeightM} min={1} max={15} step={0.1} onChange={(cameraMountHeightM) => onDefaultsChange({ cameraMountHeightM })} />
+          <div className="plan-tool-tip"><span>برای افزودن دوربین روی موقعیت موردنظر کلیک کنید.</span></div>
+        </aside>
+      );
+    }
+
+    if (activeTool === "door") {
+      return (
+        <aside className="plan-inspector plan-tool-inspector">
+          <header><DoorOpen size={18} aria-hidden="true" /><strong>افزودن در</strong></header>
+          <p>روی بدنه یک دیوار کلیک کنید. پس از جای‌گذاری، عرض، ارتفاع، سمت لولا و زاویه بازشدگی همین‌جا نمایش داده می‌شوند.</p>
+          <div className="plan-field-readout"><span>عرض اولیه</span><strong>۰٫۹ متر</strong></div>
+          <div className="plan-field-readout"><span>ارتفاع اولیه</span><strong>۲٫۱ متر</strong></div>
+          <div className="plan-tool-tip"><span>درها به دیوار متصل می‌مانند و با حذف دیوار پاک می‌شوند.</span></div>
+        </aside>
+      );
+    }
+
     return (
       <aside className="plan-inspector plan-inspector-empty">
         <Compass size={26} aria-hidden="true" />
         <strong>چیزی انتخاب نشده</strong>
-        <p>با ابزار «انتخاب» روی دیوار، مانع یا دوربین کلیک کنید تا مشخصاتش را اینجا تنظیم کنید.</p>
+        <p>با ابزار «انتخاب» روی دیوار، در، مانع یا دوربین کلیک کنید تا مشخصاتش را اینجا تنظیم کنید.</p>
       </aside>
     );
   }
@@ -51,8 +103,18 @@ export function PlanInspector({
     const wall = floor.walls.find((item) => item.id === selection.id);
     if (!wall) return null;
     const span = Math.hypot(wall.b.x - wall.a.x, wall.b.z - wall.a.z);
-    const update = (patch: Partial<typeof wall>) =>
-      onFloorChange({ ...floor, walls: floor.walls.map((item) => (item.id === wall.id ? { ...item, ...patch } : item)) });
+    const update = (patch: Partial<typeof wall>) => {
+      const nextHeight = patch.heightM ?? wall.heightM;
+      onFloorChange({
+        ...floor,
+        walls: floor.walls.map((item) => (item.id === wall.id ? { ...item, ...patch } : item)),
+        doors: (floor.doors ?? []).map((door) =>
+          door.wallId === wall.id && door.heightM >= nextHeight
+            ? { ...door, heightM: Math.max(0.5, nextHeight - 0.1) }
+            : door
+        )
+      });
+    };
 
     return (
       <aside className="plan-inspector">
@@ -64,8 +126,90 @@ export function PlanInspector({
           <input type="checkbox" checked={wall.blocksView} onChange={(event) => update({ blocksView: event.target.checked })} />
           <span>مانع دید است (شیشه را بردارید)</span>
         </label>
-        <button type="button" className="plan-delete" onClick={() => { onFloorChange({ ...floor, walls: floor.walls.filter((item) => item.id !== wall.id) }); onSelect(null); }}>
+        <button type="button" className="plan-delete" onClick={() => {
+          onFloorChange({
+            ...floor,
+            walls: floor.walls.filter((item) => item.id !== wall.id),
+            doors: (floor.doors ?? []).filter((door) => door.wallId !== wall.id)
+          });
+          onSelect(null);
+        }}>
           <Trash2 size={15} aria-hidden="true" />حذف دیوار
+        </button>
+      </aside>
+    );
+  }
+
+  if (selection.kind === "door") {
+    const door = (floor.doors ?? []).find((item) => item.id === selection.id);
+    if (!door) return null;
+    const wall = floor.walls.find((item) => item.id === door.wallId);
+    if (!wall) return null;
+    const wallLengthM = Math.hypot(wall.b.x - wall.a.x, wall.b.z - wall.a.z);
+    const update = (patch: Partial<typeof door>) => {
+      const nextWidthM = Math.min(patch.widthM ?? door.widthM, Math.max(0.5, wallLengthM - 0.2));
+      const edgeOffset = Math.min(0.49, (nextWidthM / 2 + 0.1) / wallLengthM);
+      const nextOffset = Math.max(edgeOffset, Math.min(1 - edgeOffset, patch.offset ?? door.offset));
+      onFloorChange({
+        ...floor,
+        doors: (floor.doors ?? []).map((item) =>
+          item.id === door.id ? { ...item, ...patch, widthM: nextWidthM, offset: nextOffset } : item
+        )
+      });
+    };
+
+    return (
+      <aside className="plan-inspector">
+        <header><DoorOpen size={17} aria-hidden="true" /><strong>در</strong></header>
+        <div className="plan-field-readout"><span>دیوار میزبان</span><strong>{wallLengthM.toFixed(2)} متر</strong></div>
+        <NumberField
+          label="عرض در"
+          unit="متر"
+          value={door.widthM}
+          min={0.5}
+          max={Math.max(0.5, wallLengthM - 0.2)}
+          step={0.05}
+          onChange={(widthM) => update({ widthM })}
+        />
+        <NumberField
+          label="ارتفاع در"
+          unit="متر"
+          value={door.heightM}
+          min={0.5}
+          max={Math.max(0.5, wall.heightM - 0.1)}
+          step={0.05}
+          onChange={(heightM) => update({ heightM })}
+        />
+        <NumberField
+          label="موقعیت روی دیوار"
+          unit="درصد"
+          value={Math.round(door.offset * 100)}
+          min={5}
+          max={95}
+          step={1}
+          onChange={(offsetPercent) => update({ offset: offsetPercent / 100 })}
+        />
+        <label className="plan-text-field">
+          <span>سمت لولا</span>
+          <select value={door.hinge} onChange={(event) => update({ hinge: event.target.value as typeof door.hinge })}>
+            <option value="start">ابتدای بازشو</option>
+            <option value="end">انتهای بازشو</option>
+          </select>
+        </label>
+        <NumberField
+          label="میزان بازشدگی"
+          unit="درجه"
+          value={door.openAngleDeg}
+          min={0}
+          max={90}
+          step={5}
+          onChange={(openAngleDeg) => update({ openAngleDeg })}
+        />
+        <button type="button" className="plan-delete" onClick={() => {
+          onFloorChange({ ...floor, doors: (floor.doors ?? []).filter((item) => item.id !== door.id) });
+          onSelect(null);
+        }}>
+          <Trash2 size={15} aria-hidden="true" />حذف در
         </button>
       </aside>
     );

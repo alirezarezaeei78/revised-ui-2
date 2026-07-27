@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
-import type { BuildingPlan, FloorPlan } from "@/src/domain/planner/types";
+import type { BuildingPlan, FloorPlan, PlanDoor, PlanWall } from "@/src/domain/planner/types";
 import type { CatalogProduct, RecommendationPlan } from "@/src/domain/catalog/types";
 import { computeFloorCoverage, doriLevels } from "@/src/lib/planner/coverage";
 import { boundsOf, obstacleCorners } from "@/src/lib/planner/geometry";
@@ -82,7 +82,7 @@ function FloorSvg({ floor, cameraProducts }: { floor: FloorPlan; cameraProducts:
       <header>
         <strong>{floor.name}</strong>
         <span>
-          {formatFa(coverage.areaM2, 1)} متر مربع · {formatFa(floor.cameras.length)} دوربین ·
+          {formatFa(coverage.areaM2, 1)} متر مربع · {formatFa(floor.cameras.length)} دوربین · {formatFa((floor.doors ?? []).length)} در ·
           پوشش {formatFa(coverage.coveredPercent, 0)}٪ · سطح شناسایی {formatFa(coverage.identifyPercent, 0)}٪
         </span>
       </header>
@@ -134,6 +134,11 @@ function FloorSvg({ floor, cameraProducts }: { floor: FloorPlan; cameraProducts:
               strokeLinecap="square"
             />
           ))}
+
+          {(floor.doors ?? []).map((door) => {
+            const wall = floor.walls.find((item) => item.id === door.wallId);
+            return wall ? <DoorSvg key={door.id} door={door} wall={wall} /> : null;
+          })}
 
           {floor.cameras.map((camera, index) => {
             const item = coverage.cameras.find((entry) => entry.cameraId === camera.id);
@@ -188,5 +193,48 @@ function FloorSvg({ floor, cameraProducts }: { floor: FloorPlan; cameraProducts:
         })}
       </ol>
     </article>
+  );
+}
+
+function DoorSvg({ door, wall }: { door: PlanDoor; wall: PlanWall }) {
+  const dx = wall.b.x - wall.a.x;
+  const dz = wall.b.z - wall.a.z;
+  const span = Math.hypot(dx, dz) || 0.01;
+  const u = { x: dx / span, z: dz / span };
+  const normal = { x: -u.z, z: u.x };
+  const center = { x: wall.a.x + dx * door.offset, z: wall.a.z + dz * door.offset };
+  const hingeSign = door.hinge === "start" ? -1 : 1;
+  const hinge = {
+    x: center.x + u.x * door.widthM * hingeSign / 2,
+    z: center.z + u.z * door.widthM * hingeSign / 2
+  };
+  const closedDirection = { x: -u.x * hingeSign, z: -u.z * hingeSign };
+  const angle = (door.openAngleDeg * Math.PI) / 180;
+  const openDirection = {
+    x: closedDirection.x * Math.cos(angle) + normal.x * Math.sin(angle),
+    z: closedDirection.z * Math.cos(angle) + normal.z * Math.sin(angle)
+  };
+  const openEnd = { x: hinge.x + openDirection.x * door.widthM, z: hinge.z + openDirection.z * door.widthM };
+  const arc = Array.from({ length: 17 }, (_, index) => {
+    const radians = angle * (index / 16);
+    return {
+      x: hinge.x + (closedDirection.x * Math.cos(radians) + normal.x * Math.sin(radians)) * door.widthM,
+      z: hinge.z + (closedDirection.z * Math.cos(radians) + normal.z * Math.sin(radians)) * door.widthM
+    };
+  });
+  const arcPath = arc.map((point, index) => `${index ? "L" : "M"}${point.x.toFixed(3)},${point.z.toFixed(3)}`).join(" ");
+  const openingStart = { x: center.x - u.x * door.widthM / 2, z: center.z - u.z * door.widthM / 2 };
+  const openingEnd = { x: center.x + u.x * door.widthM / 2, z: center.z + u.z * door.widthM / 2 };
+
+  return (
+    <g>
+      <line
+        x1={openingStart.x} y1={openingStart.z} x2={openingEnd.x} y2={openingEnd.z}
+        stroke="#fff" strokeWidth={Math.max(0.18, wall.thicknessM + 0.08)}
+      />
+      <line x1={hinge.x} y1={hinge.z} x2={openEnd.x} y2={openEnd.z} stroke="#9a5b2c" strokeWidth={0.1} />
+      <path d={arcPath} fill="none" stroke="#b7791f" strokeWidth={0.06} strokeDasharray="0.16 0.09" />
+      <circle cx={hinge.x} cy={hinge.z} r={0.09} fill="#9a5b2c" />
+    </g>
   );
 }

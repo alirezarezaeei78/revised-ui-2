@@ -100,7 +100,9 @@ export function ProjectWizard() {
   const applyPlanSummary = useCallback((summary: PlanSummary) => {
     setBrief((current) => ({
       ...current,
-      siteAreaM2: Math.round(summary.totalAreaM2) || current.siteAreaM2,
+      // An open wall chain has no valid area; keep that visible as zero instead of
+      // silently retaining an unrelated previous estimate.
+      siteAreaM2: Math.round(summary.totalAreaM2),
       floors: summary.floorCount
     }));
   }, []);

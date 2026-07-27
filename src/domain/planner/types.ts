@@ -23,6 +23,18 @@ export type PlanWall = {
   blocksView: boolean;
 };
 
+export type PlanDoor = {
+  id: string;
+  wallId: string;
+  /** Normalised distance of the door centre from wall.a toward wall.b. */
+  offset: number;
+  widthM: number;
+  heightM: number;
+  hinge: "start" | "end";
+  /** Visual opening angle; 0 is closed and 90 is fully open. */
+  openAngleDeg: number;
+};
+
 export type ObstacleKind = "block" | "pillar" | "shelf" | "vehicle" | "counter";
 
 export type PlanObstacle = {
@@ -90,6 +102,7 @@ export type FloorPlan = {
   elevationM: number;
   heightM: number;
   walls: PlanWall[];
+  doors: PlanDoor[];
   obstacles: PlanObstacle[];
   cameras: PlanCamera[];
   backdrop?: PlanBackdrop;
@@ -100,13 +113,22 @@ export type BuildingPlan = {
   activeFloorId: string;
   gridSizeM: number;
   snapM: number;
+  defaults: PlanDefaults;
 };
 
-export type PlanTool = "select" | "wall" | "obstacle" | "camera" | "measure";
+export type PlanDefaults = {
+  wallHeightM: number;
+  wallThicknessM: number;
+  obstacleHeightM: number;
+  cameraMountHeightM: number;
+};
+
+export type PlanTool = "select" | "wall" | "door" | "obstacle" | "camera" | "measure";
 export type PlanViewMode = "top" | "orbit";
 
 export type PlanSelection =
   | { kind: "wall"; id: string }
+  | { kind: "door"; id: string }
   | { kind: "obstacle"; id: string }
   | { kind: "camera"; id: string }
   | null;
@@ -123,6 +145,12 @@ export const defaultCameraOptics: PlanCameraOptics = {
 
 export const defaultWallHeightM = 3;
 export const defaultWallThicknessM = 0.2;
+export const defaultPlanDefaults: PlanDefaults = {
+  wallHeightM: defaultWallHeightM,
+  wallThicknessM: defaultWallThicknessM,
+  obstacleHeightM: 1.2,
+  cameraMountHeightM: defaultCameraOptics.mountHeightM
+};
 
 export function createFloor(name: string, index: number, storeyHeightM = 3.2): FloorPlan {
   return {
@@ -131,6 +159,7 @@ export function createFloor(name: string, index: number, storeyHeightM = 3.2): F
     elevationM: index * storeyHeightM,
     heightM: storeyHeightM,
     walls: [],
+    doors: [],
     obstacles: [],
     cameras: []
   };
@@ -145,6 +174,14 @@ export function duplicateFloor(source: FloorPlan, name: string, index: number): 
     elevationM: index * source.heightM,
     heightM: source.heightM,
     walls: source.walls.map((wall, order) => ({ ...wall, id: `wall-${stamp}-${order}`, a: { ...wall.a }, b: { ...wall.b } })),
+    doors: (source.doors ?? []).map((door, order) => {
+      const sourceWallIndex = source.walls.findIndex((wall) => wall.id === door.wallId);
+      return {
+        ...door,
+        id: `door-${stamp}-${order}`,
+        wallId: sourceWallIndex >= 0 ? `wall-${stamp}-${sourceWallIndex}` : door.wallId
+      };
+    }),
     obstacles: source.obstacles.map((obstacle, order) => ({ ...obstacle, id: `obs-${stamp}-${order}`, center: { ...obstacle.center } })),
     cameras: source.cameras.map((camera, order) => ({
       ...camera,
@@ -158,5 +195,11 @@ export function duplicateFloor(source: FloorPlan, name: string, index: number): 
 
 export function createEmptyPlan(): BuildingPlan {
   const ground = createFloor("طبقه همکف", 0);
-  return { floors: [ground], activeFloorId: ground.id, gridSizeM: 1, snapM: 0.25 };
+  return {
+    floors: [ground],
+    activeFloorId: ground.id,
+    gridSizeM: 1,
+    snapM: 1,
+    defaults: { ...defaultPlanDefaults }
+  };
 }

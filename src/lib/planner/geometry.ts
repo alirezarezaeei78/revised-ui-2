@@ -18,6 +18,137 @@ export function snapPoint(point: Vec2, step: number): Vec2 {
   return { x: snapTo(point.x, step), z: snapTo(point.z, step) };
 }
 
+export function projectPointToWall(point: Vec2, wall: PlanWall, edgeInsetM = 0): { point: Vec2; offset: number } {
+  const dx = wall.b.x - wall.a.x;
+  const dz = wall.b.z - wall.a.z;
+  const lengthSquared = dx * dx + dz * dz;
+  if (lengthSquared <= 1e-9) return { point: { ...wall.a }, offset: 0 };
+  const lengthM = Math.sqrt(lengthSquared);
+  const inset = Math.min(0.49, Math.max(0, edgeInsetM / lengthM));
+  const rawOffset = ((point.x - wall.a.x) * dx + (point.z - wall.a.z) * dz) / lengthSquared;
+  const offset = Math.max(inset, Math.min(1 - inset, rawOffset));
+  return {
+    point: { x: wall.a.x + dx * offset, z: wall.a.z + dz * offset },
+    offset
+  };
+}
+
+export type EqualParallelWallSnap = {
+  point: Vec2;
+  guideFrom: Vec2;
+  guideTo: Vec2;
+  referenceWallId: string;
+  lengthM: number;
+};
+
+/**
+ * Finds the closest endpoint that makes a new wall exactly parallel and equal in length
+ * to an existing wall. The matching reference endpoint is returned for a smart guide.
+ */
+export function snapWallToEqualParallel(
+  start: Vec2,
+  point: Vec2,
+  walls: PlanWall[],
+  toleranceM: number
+): EqualParallelWallSnap | null {
+  let best: (EqualParallelWallSnap & { pointerDistanceM: number }) | null = null;
+
+  for (const wall of walls) {
+    const wallLengthM = distance(wall.a, wall.b);
+    if (wallLengthM < 0.2) continue;
+
+    for (const [referenceStart, referenceEnd] of [[wall.a, wall.b], [wall.b, wall.a]] as const) {
+      const candidate = {
+        x: start.x + referenceEnd.x - referenceStart.x,
+        z: start.z + referenceEnd.z - referenceStart.z
+      };
+      const pointerDistanceM = distance(point, candidate);
+      if (pointerDistanceM > toleranceM || (best && pointerDistanceM >= best.pointerDistanceM)) continue;
+
+      best = {
+        point: candidate,
+        guideFrom: referenceEnd,
+        guideTo: candidate,
+        referenceWallId: wall.id,
+        lengthM: wallLengthM,
+        pointerDistanceM
+      };
+    }
+  }
+
+  if (!best) return null;
+  return {
+    point: best.point,
+    guideFrom: best.guideFrom,
+    guideTo: best.guideTo,
+    referenceWallId: best.referenceWallId,
+    lengthM: best.lengthM
+  };
+}
+
+export type RightAngleCorner = {
+  corner: Vec2;
+  armA: Vec2;
+  armB: Vec2;
+};
+
+export function isAxisAlignedSegment(a: Vec2, b: Vec2, toleranceDeg = 0.15): boolean {
+  const dx = Math.abs(b.x - a.x);
+  const dz = Math.abs(b.z - a.z);
+  const span = Math.hypot(dx, dz);
+  if (span < 0.1) return false;
+  return Math.min(dx, dz) / span <= Math.sin((toleranceDeg * Math.PI) / 180);
+}
+
+function sharedWallCorner(first: PlanWall, second: PlanWall, toleranceM: number): RightAngleCorner | null {
+  const endpointPairs = [
+    [first.a, first.b, second.a, second.b],
+    [first.a, first.b, second.b, second.a],
+    [first.b, first.a, second.a, second.b],
+    [first.b, first.a, second.b, second.a]
+  ] as const;
+
+  for (const [firstCorner, firstOther, secondCorner, secondOther] of endpointPairs) {
+    if (distance(firstCorner, secondCorner) > toleranceM) continue;
+    const firstLength = distance(firstCorner, firstOther);
+    const secondLength = distance(secondCorner, secondOther);
+    if (firstLength < 0.2 || secondLength < 0.2) continue;
+    const armA = {
+      x: (firstOther.x - firstCorner.x) / firstLength,
+      z: (firstOther.z - firstCorner.z) / firstLength
+    };
+    const armB = {
+      x: (secondOther.x - secondCorner.x) / secondLength,
+      z: (secondOther.z - secondCorner.z) / secondLength
+    };
+    return { corner: firstCorner, armA, armB };
+  }
+  return null;
+}
+
+export function findRightAngleCorner(
+  first: PlanWall,
+  second: PlanWall,
+  endpointToleranceM = 0.05,
+  angleToleranceDeg = 0.15
+): RightAngleCorner | null {
+  const corner = sharedWallCorner(first, second, endpointToleranceM);
+  if (!corner) return null;
+  const dot = corner.armA.x * corner.armB.x + corner.armA.z * corner.armB.z;
+  return Math.abs(dot) <= Math.sin((angleToleranceDeg * Math.PI) / 180) ? corner : null;
+}
+
+export function collectRightAngleCorners(walls: PlanWall[]): RightAngleCorner[] {
+  const corners: RightAngleCorner[] = [];
+  for (let firstIndex = 0; firstIndex < walls.length; firstIndex += 1) {
+    for (let secondIndex = firstIndex + 1; secondIndex < walls.length; secondIndex += 1) {
+      const corner = findRightAngleCorner(walls[firstIndex], walls[secondIndex]);
+      if (corner) corners.push(corner);
+    }
+  }
+  return corners;
+}
+
 /** Shoelace. Returns absolute area, so winding order does not matter. */
 export function polygonArea(points: Vec2[]): number {
   if (points.length < 3) return 0;
@@ -206,10 +337,8 @@ export function traceWallLoop(walls: PlanWall[], tolerance = 0.05): Vec2[] | nul
   return loop.length >= 3 ? loop : null;
 }
 
-/** Enclosed floor area in square metres, from a wall ring when possible. */
+/** Enclosed floor area in square metres. Open wall chains never produce a guessed area. */
 export function floorAreaM2(walls: PlanWall[]): number {
   const loop = traceWallLoop(walls);
-  if (loop) return polygonArea(loop);
-  const endpoints = walls.flatMap((wall) => [wall.a, wall.b]);
-  return endpoints.length >= 3 ? polygonArea(convexHull(endpoints)) : 0;
+  return loop ? polygonArea(loop) : 0;
 }
