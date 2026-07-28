@@ -83,7 +83,7 @@ function FloorSvg({ floor, cameraProducts }: { floor: FloorPlan; cameraProducts:
         <strong>{floor.name}</strong>
         <span>
           {formatFa(coverage.areaM2, 1)} متر مربع · {formatFa(floor.cameras.length)} دوربین · {formatFa((floor.doors ?? []).length)} در ·
-          پوشش {formatFa(coverage.coveredPercent, 0)}٪ · سطح شناسایی {formatFa(coverage.identifyPercent, 0)}٪
+          {coverage.hasPtzPatrol ? "پوشش بالقوه با گشت PTZ" : "پوشش"} {formatFa(coverage.coveredPercent, 0)}٪ · سطح شناسایی {formatFa(coverage.identifyPercent, 0)}٪
         </span>
       </header>
 

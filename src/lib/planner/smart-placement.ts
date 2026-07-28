@@ -135,7 +135,7 @@ function buildCandidates(floor: FloorPlan, boundary: Vec2[]): Candidate[] {
   const seen = new Set<string>();
   const push = (candidate: Candidate) => {
     if (!usablePoint(candidate.position, boundary, floor)) return;
-    const key = `${Math.round(candidate.position.x / 0.2)}:${Math.round(candidate.position.z / 0.2)}:${Math.round(candidate.yawDeg / 10)}`;
+    const key = `${candidate.mounting}:${Math.round(candidate.position.x / 0.2)}:${Math.round(candidate.position.z / 0.2)}:${Math.round(candidate.yawDeg / 10)}`;
     if (seen.has(key)) return;
     seen.add(key);
     candidates.push(candidate);
@@ -369,7 +369,11 @@ export function optimiseCameraPlacement(
         }
         if (candidate.facesDoor && definition.goal !== "monitor") score *= 1.18;
         if (definition.housing === "dome" && candidate.mounting === "ceiling") score *= 1.08;
-        if (definition.housing === "ptz" && candidate.mounting === "central") score *= 1.12;
+        if (definition.housing === "ptz" && candidate.mounting === "central") {
+          // Patrol coverage is sequential, not simultaneous, so it must not crowd out
+          // fixed cameras solely because its potential polygon is wider.
+          score *= 0.62;
+        }
         // A small fairness term prevents a large ground floor from starving every
         // upper storey when enough cameras exist to cover both.
         score *= 1 + 0.12 / (floorCameraCount + 1);
@@ -419,6 +423,9 @@ export function optimiseCameraPlacement(
   }
   if (placed > 0 && after < 70) {
     warnings.push(`پوشش برآوردی ${Math.round(after)}٪ است؛ نقاط کور باقی‌مانده را در لایه DORI بازبینی کنید.`);
+  }
+  if ([...additions.values()].some((cameras) => cameras.some((camera) => camera.housing === "ptz"))) {
+    warnings.push("پوشش PTZ بالقوه و مبتنی بر گشت است؛ برای نقاط حیاتی از دوربین ثابت پشتیبان استفاده کنید.");
   }
   return {
     plan: { ...plan, floors: nextFloors },

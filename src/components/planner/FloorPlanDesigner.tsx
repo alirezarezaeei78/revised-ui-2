@@ -659,7 +659,7 @@ export function FloorPlanDesigner({
           <span><strong>{formatFa((activeFloor.doors ?? []).length)}</strong> در</span>
           <span><strong>{formatFa(activeFloor.obstacles.length)}</strong> مانع</span>
           <span><strong>{formatFa(activeFloor.cameras.length)}</strong> دوربین</span>
-          {coverage ? <span><strong>{formatFa(coverage.coveredPercent, 0)}٪</strong> پوشش</span> : null}
+          {coverage ? <span title={coverage.hasPtzPatrol ? "شامل محدوده بالقوه گشت PTZ؛ همه جهت‌ها هم‌زمان دیده نمی‌شوند" : undefined}><strong>{formatFa(coverage.coveredPercent, 0)}٪</strong> {coverage.hasPtzPatrol ? "پوشش بالقوه" : "پوشش"}</span> : null}
           {coverage ? <span><strong>{formatFa(coverage.identifyPercent, 0)}٪</strong> سطح شناسایی</span> : null}
         </div>
       </div>

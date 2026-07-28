@@ -154,6 +154,7 @@ export function computeCameraCoverage(camera: PlanCamera, occluders: Segment[], 
 
 export type FloorCoverage = {
   cameras: CameraCoverage[];
+  hasPtzPatrol: boolean;
   areaM2: number;
   coveredPercent: number;
   identifyPercent: number;
@@ -170,12 +171,13 @@ export type FloorCoverage = {
 export function computeFloorCoverage(floor: FloorPlan, gridStepM = 1): FloorCoverage {
   const occluders = collectOccluders(floor.walls, floor.obstacles, floor.doors);
   const cameras = floor.cameras.map((camera) => computeCameraCoverage(camera, occluders));
+  const hasPtzPatrol = cameras.some((camera) => camera.coverageMode === "ptz-patrol");
   const areaM2 = floorAreaM2(floor.walls);
 
   const points = floor.walls.flatMap((wall) => [wall.a, wall.b]);
   const bounds = boundsOf(points.length ? points : floor.cameras.map((camera) => camera.position));
   if (!bounds) {
-    return { cameras, areaM2, coveredPercent: 0, identifyPercent: 0, blindPercent: 100, grid: [] };
+    return { cameras, hasPtzPatrol, areaM2, coveredPercent: 0, identifyPercent: 0, blindPercent: 100, grid: [] };
   }
 
   const grid: FloorCoverage["grid"] = [];
@@ -204,6 +206,7 @@ export function computeFloorCoverage(floor: FloorPlan, gridStepM = 1): FloorCove
   const ratio = (value: number) => (total > 0 ? (value / total) * 100 : 0);
   return {
     cameras,
+    hasPtzPatrol,
     areaM2,
     coveredPercent: ratio(covered),
     identifyPercent: ratio(identify),

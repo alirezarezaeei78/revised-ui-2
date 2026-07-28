@@ -139,7 +139,7 @@ test("smart placement preserves existing cameras and fills blind areas", () => {
   const boundary = largestClosedWallLoop(walls);
 
   assert.equal(result.report.requested, 4);
-  assert.equal(result.report.placed, 4);
+  assert.equal(result.report.placed, 4, JSON.stringify(result.report));
   assert.equal(nextFloor.cameras[0], floor.cameras[0]);
   assert.equal(nextFloor.cameras.length, 5);
   assert.ok(result.report.coverageAfterPercent >= result.report.coverageBeforePercent);

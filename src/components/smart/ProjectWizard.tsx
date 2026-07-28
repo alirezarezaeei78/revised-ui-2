@@ -82,7 +82,7 @@ function suggestedHousing(
   }
   if (zone.goal === "monitor") return index % 2 === 0 ? "turret" : "dome";
   if (zone.goal === "face-capture" || zone.goal === "face-identify") {
-    return index % 2 === 0 ? "bullet" : "dome";
+    return "bullet";
   }
   return "turret";
 }
