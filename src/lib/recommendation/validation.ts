@@ -1,8 +1,10 @@
-import type { ProjectBrief, ProjectZone, SurveillanceTask } from "@/src/domain/catalog/types";
+import type { ProjectBrief, ProjectCameraConfig, ProjectCameraUnit, ProjectZone, SurveillanceTask } from "@/src/domain/catalog/types";
+import { TASK_MINIMUM_PPM } from "@/src/lib/recommendation/camera-constraints";
 
 const projectTypes = ["shop", "office", "factory", "parking", "residential"];
 const budgets = ["economy", "balanced", "professional"];
 const tasks: SurveillanceTask[] = ["monitor", "face-capture", "face-identify", "plate-capture", "anpr"];
+const cameraHousings: ProjectCameraConfig["housing"][] = ["dome", "turret", "bullet", "ptz"];
 
 const normalizeTask = (value: unknown): SurveillanceTask => {
   const task = String(value);
@@ -77,29 +79,98 @@ function summarizeGoal(zones: ProjectZone[]): ProjectBrief["goal"] {
 
 function parseZones(value: unknown): ProjectZone[] {
   if (!Array.isArray(value)) return [];
-  if (value.length > 8) throw new Error("حداکثر ۸ ناحیه برای هر پروژه قابل تعریف است.");
+  if (value.length > 20) throw new Error("حداکثر ۲۰ گروه برای هر پروژه قابل تعریف است.");
   return value.map((zone, index) => {
     if (!zone || typeof zone !== "object") throw new Error("اطلاعات یکی از ناحیه‌ها معتبر نیست.");
     const item = zone as Record<string, unknown>;
-    const cameraCount = Math.round(Number(item.cameraCount));
-    if (!Number.isFinite(cameraCount) || cameraCount < 1 || cameraCount > 32) throw new Error("تعداد دوربین هر ناحیه باید بین ۱ تا ۳۲ باشد.");
     const name = typeof item.name === "string" ? item.name.slice(0, 80).trim() : `ناحیه ${index + 1}`;
     if (!name) throw new Error("نام ناحیه نمی‌تواند خالی باشد.");
+    const goal = normalizeTask(item.goal);
+    const targetDistanceM = requiredNumber(item.targetDistanceM, 0.5, 500, `فاصله هدف در ناحیه ${name}`);
+    const sceneWidthM = requiredNumber(item.sceneWidthM, 0.5, 200, `عرض صحنه در ناحیه ${name}`);
+    const mountingHeightM = requiredNumber(item.mountingHeightM, 1.5, 30, `ارتفاع نصب در ناحیه ${name}`);
+    const targetHeightM = requiredNumber(item.targetHeightM, 0, 5, `ارتفاع هدف در ناحیه ${name}`);
+    const cameraTiltDeg = requiredNumber(item.cameraTiltDeg, 0, 89, `زاویه Tilt در ناحیه ${name}`);
     const minimumPpm = optionalNumber(item.minimumPpm, 10, 1_000);
     const measuredBitrateKbps = optionalNumber(item.measuredBitrateKbps, 16, 100_000);
+    const cameras = parseCameraUnits(item.cameras, name, {
+      targetDistanceM,
+      sceneWidthM,
+      mountingHeightM,
+      targetHeightM,
+      cameraTiltDeg,
+      minimumPpm: minimumPpm || TASK_MINIMUM_PPM[goal],
+      measuredBitrateKbps
+    });
+    const cameraCount = cameras?.length ?? Math.round(Number(item.cameraCount));
+    if (!Number.isFinite(cameraCount) || cameraCount < 1 || cameraCount > 32) throw new Error("تعداد دوربین هر ناحیه باید بین ۱ تا ۳۲ باشد.");
     return {
       id: typeof item.id === "string" ? item.id.slice(0, 80) : `zone-${index}`,
       name,
       cameraCount,
       outdoor: Boolean(item.outdoor),
-      goal: normalizeTask(item.goal),
-      targetDistanceM: requiredNumber(item.targetDistanceM, 0.5, 500, `فاصله هدف در ناحیه ${name}`),
-      sceneWidthM: requiredNumber(item.sceneWidthM, 0.5, 200, `عرض صحنه در ناحیه ${name}`),
-      mountingHeightM: requiredNumber(item.mountingHeightM, 1.5, 30, `ارتفاع نصب در ناحیه ${name}`),
-      targetHeightM: requiredNumber(item.targetHeightM, 0, 5, `ارتفاع هدف در ناحیه ${name}`),
-      cameraTiltDeg: requiredNumber(item.cameraTiltDeg, 0, 89, `زاویه Tilt در ناحیه ${name}`),
+      goal,
+      targetDistanceM,
+      sceneWidthM,
+      mountingHeightM,
+      targetHeightM,
+      cameraTiltDeg,
       minimumPpm,
-      measuredBitrateKbps
+      measuredBitrateKbps,
+      cameras,
+      cameraConfig: parseCameraConfig(item.cameraConfig, name)
     };
   });
+}
+
+function parseCameraUnits(
+  value: unknown,
+  zoneName: string,
+  defaults: Pick<ProjectCameraUnit, "targetDistanceM" | "sceneWidthM" | "mountingHeightM" | "targetHeightM" | "cameraTiltDeg" | "minimumPpm" | "measuredBitrateKbps">
+): ProjectCameraUnit[] | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value) || value.length < 1 || value.length > 32) throw new Error(`فهرست دوربین‌های گروه ${zoneName} معتبر نیست.`);
+  const ids = new Set<string>();
+  return value.map((camera, index) => {
+    if (!camera || typeof camera !== "object") throw new Error(`دوربین ${index + 1} در گروه ${zoneName} معتبر نیست.`);
+    const item = camera as Record<string, unknown>;
+    const config = parseCameraConfig(item, zoneName);
+    if (!config) throw new Error(`تنظیمات دوربین ${index + 1} در گروه ${zoneName} ناقص است.`);
+    const id = typeof item.id === "string" && item.id.trim() ? item.id.slice(0, 80) : `camera-${index + 1}`;
+    if (ids.has(id)) throw new Error(`شناسه دوربین‌ها در گروه ${zoneName} باید یکتا باشد.`);
+    ids.add(id);
+    return {
+      id,
+      ...config,
+      targetDistanceM: optionalNumber(item.targetDistanceM, 0.5, 500) ?? defaults.targetDistanceM,
+      sceneWidthM: optionalNumber(item.sceneWidthM, 0.5, 200) ?? defaults.sceneWidthM,
+      mountingHeightM: optionalNumber(item.mountingHeightM, 1.5, 30) ?? defaults.mountingHeightM,
+      targetHeightM: optionalNumber(item.targetHeightM, 0, 5) ?? defaults.targetHeightM,
+      cameraTiltDeg: optionalNumber(item.cameraTiltDeg, 0, 89) ?? defaults.cameraTiltDeg,
+      minimumPpm: optionalNumber(item.minimumPpm, 10, 1_000) ?? defaults.minimumPpm,
+      measuredBitrateKbps: optionalNumber(item.measuredBitrateKbps, 16, 100_000) ?? defaults.measuredBitrateKbps
+    };
+  });
+}
+
+function parseCameraConfig(value: unknown, zoneName: string): ProjectCameraConfig | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "object") throw new Error(`تنظیمات دوربین گروه ${zoneName} معتبر نیست.`);
+  const item = value as Record<string, unknown>;
+  const housing = String(item.housing) as ProjectCameraConfig["housing"];
+  if (!cameraHousings.includes(housing)) throw new Error(`نوع بدنه دوربین گروه ${zoneName} معتبر نیست.`);
+  const label = typeof item.label === "string" ? item.label.slice(0, 80).trim() : "";
+  if (!label) throw new Error(`نام دوربین گروه ${zoneName} نمی‌تواند خالی باشد.`);
+  return {
+    label,
+    housing,
+    megapixel: requiredNumber(item.megapixel, 1, 32, `رزولوشن دوربین گروه ${zoneName}`),
+    sensorWidthMm: requiredNumber(item.sensorWidthMm, 1, 20, `عرض سنسور دوربین گروه ${zoneName}`),
+    focalMm: requiredNumber(item.focalMm, 1, 120, `لنز دوربین گروه ${zoneName}`),
+    irRangeM: requiredNumber(item.irRangeM, 0, 300, `برد IR دوربین گروه ${zoneName}`),
+    maxRangeM: requiredNumber(item.maxRangeM, 2, 300, `برد مؤثر دوربین گروه ${zoneName}`),
+    microphone: Boolean(item.microphone),
+    colorNightVision: Boolean(item.colorNightVision),
+    weatherproof: Boolean(item.weatherproof)
+  };
 }

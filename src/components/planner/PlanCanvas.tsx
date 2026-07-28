@@ -73,6 +73,7 @@ export type PlanCanvasProps = {
   onSelect: (selection: PlanSelection) => void;
   onFloorChange: (floor: FloorPlan) => void;
   onHint: (hint: string | null) => void;
+  onDropCamera?: (definitionId: string, position: Vec2) => void;
   onPlaceBackdrop?: (center: Vec2) => void;
   onCancelBackdropPlacement?: () => void;
 };
@@ -100,7 +101,7 @@ export function PlanCanvas(props: PlanCanvasProps) {
 
   const coverages = useMemo<CameraCoverage[]>(() => {
     if (!showCoverage) return [];
-    const occluders = collectOccluders(floor.walls, floor.obstacles);
+    const occluders = collectOccluders(floor.walls, floor.obstacles, floor.doors);
     return floor.cameras.map((camera) => computeCameraCoverage(camera, occluders, 64));
   }, [floor, showCoverage]);
 
@@ -365,6 +366,19 @@ export function PlanCanvas(props: PlanCanvasProps) {
     if (latest.current.viewMode === "top") bundle.topControls.enabled = enabled;
     else bundle.orbitControls.enabled = enabled;
   }, []);
+
+  const handleCameraDrop = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    const definitionId = event.dataTransfer.getData("application/x-hamyar-camera")
+      || event.dataTransfer.getData("text/plain");
+    if (!definitionId || !latest.current.onDropCamera || latest.current.readOnly) return;
+    event.preventDefault();
+    const point = planPointAt(event.clientX, event.clientY);
+    if (!point) {
+      latest.current.onHint("محل رها کردن دوربین روی نقشه معتبر نیست");
+      return;
+    }
+    latest.current.onDropCamera(definitionId, snapPoint(point, latest.current.snapM));
+  }, [planPointAt]);
 
   /* ── Interaction ─────────────────────────────────────────────────── */
   const handlePointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
@@ -696,6 +710,12 @@ export function PlanCanvas(props: PlanCanvasProps) {
       <div
         ref={hostRef}
         className={`plan-canvas tool-${readOnly ? "readonly" : tool}`}
+        onDragOver={(event) => {
+          if (!latest.current.onDropCamera || !event.dataTransfer.types.includes("application/x-hamyar-camera")) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "copy";
+        }}
+        onDrop={handleCameraDrop}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={endDrag}
@@ -748,7 +768,15 @@ function syncScene(bundle: Bundle, props: Pick<PlanCanvasProps, "floor" | "selec
   }
   for (const camera of floor.cameras) {
     const isSelected = selection?.kind === "camera" && selection.id === camera.id;
-    groups.cameras.add(buildCameraMarker(THREE, camera.id, camera.position, camera.optics.mountHeightM, camera.yawDeg, isSelected));
+    groups.cameras.add(buildCameraMarker(
+      THREE,
+      camera.id,
+      camera.position,
+      camera.optics.mountHeightM,
+      camera.yawDeg,
+      isSelected,
+      camera.housing
+    ));
     if (isSelected) groups.cameras.add(buildYawHandle(THREE, camera.id, camera.position, camera.optics.mountHeightM, camera.yawDeg));
   }
   for (const coverage of coverages) {

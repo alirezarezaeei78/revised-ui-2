@@ -129,6 +129,33 @@ export type SourceCatalogPage = {
 
 export type SurveillanceTask = "monitor" | "face-capture" | "face-identify" | "plate-capture" | "anpr";
 
+export type CameraHousing = "dome" | "turret" | "bullet" | "ptz";
+
+export type ProjectCameraConfig = {
+  /** User-facing identity shared by the cameras in this group. */
+  label: string;
+  housing: CameraHousing;
+  megapixel: number;
+  sensorWidthMm: number;
+  focalMm: number;
+  irRangeM: number;
+  maxRangeM: number;
+  microphone: boolean;
+  colorNightVision: boolean;
+  weatherproof: boolean;
+};
+
+export type ProjectCameraUnit = ProjectCameraConfig & {
+  id: string;
+  targetDistanceM: number;
+  sceneWidthM: number;
+  mountingHeightM: number;
+  targetHeightM: number;
+  cameraTiltDeg: number;
+  minimumPpm: number;
+  measuredBitrateKbps?: number;
+};
+
 export type ProjectZone = {
   id: string;
   name: string;
@@ -142,6 +169,10 @@ export type ProjectZone = {
   cameraTiltDeg: number;
   minimumPpm?: number;
   measuredBitrateKbps?: number;
+  /** Independently configured cameras belonging to this group. */
+  cameras?: ProjectCameraUnit[];
+  /** Legacy shared configuration retained for saved-project migration. */
+  cameraConfig?: ProjectCameraConfig;
 };
 
 export type EngineeringPoint = { xM: number; yM: number };

@@ -63,6 +63,16 @@ export function evaluateCameraForZone(specs: CameraSpecs, zone: ProjectZone, bri
     if (!specs.aiFeatures.includes("تشخیص چهره")) failedConstraints.push("قابلیت تشخیص/ثبت چهره در مشخصات محصول نیست.");
   }
   if (zone.goal === "anpr" && !specs.aiFeatures.includes("پلاک‌خوانی")) failedConstraints.push("قابلیت ANPR در مشخصات محصول نیست.");
+  if (zone.cameraConfig) {
+    const config = zone.cameraConfig;
+    if (specs.cameraType !== config.housing) failedConstraints.push(`نوع بدنه باید ${config.housing} باشد.`);
+    if (specs.resolutionMp < config.megapixel) failedConstraints.push(`رزولوشن از تنظیم گروه (${config.megapixel}MP) کمتر است.`);
+    if (config.focalMm < specs.focalMinMm || config.focalMm > specs.focalMaxMm) failedConstraints.push(`لنز ${config.focalMm}mm در بازه لنز محصول نیست.`);
+    if (specs.irRangeM < config.irRangeM) failedConstraints.push(`برد IR از تنظیم گروه (${config.irRangeM}m) کمتر است.`);
+    if (config.microphone && !specs.microphone) failedConstraints.push("تنظیم گروه به میکروفون داخلی نیاز دارد.");
+    if (config.colorNightVision && !specs.aiFeatures.includes("دید رنگی شب")) failedConstraints.push("تنظیم گروه به دید در شب رنگی نیاز دارد.");
+    if (config.weatherproof && !/^IP6[6-9]/.test(specs.ipRating)) failedConstraints.push("تنظیم گروه به بدنه مقاوم فضای باز نیاز دارد.");
+  }
   if (brief.audioRequired && !specs.microphone) failedConstraints.push("میکروفون داخلی ندارد.");
   if (brief.lowLightPriority && specs.irRangeM < slantDistanceM && !specs.aiFeatures.includes("دید رنگی شب")) failedConstraints.push("برد IR از فاصله مایل هدف کمتر است.");
   if (brief.localRecordingFallback && !specs.localStorageGb) failedConstraints.push("حافظه محلی پشتیبان ندارد.");

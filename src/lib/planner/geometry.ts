@@ -1,4 +1,4 @@
-import type { PlanObstacle, PlanWall, Vec2 } from "@/src/domain/planner/types";
+import type { PlanDoor, PlanObstacle, PlanWall, Vec2 } from "@/src/domain/planner/types";
 
 /** 2D plan geometry: areas, segment maths and the ray casting the coverage engine uses. */
 
@@ -212,9 +212,41 @@ export function wallSegment(wall: PlanWall): Segment {
 }
 
 /** Occluding geometry for one floor, ready for ray casting. */
-export function collectOccluders(walls: PlanWall[], obstacles: PlanObstacle[]): Segment[] {
+export function collectOccluders(walls: PlanWall[], obstacles: PlanObstacle[], doors: PlanDoor[] = []): Segment[] {
   const segments: Segment[] = [];
-  for (const wall of walls) if (wall.blocksView) segments.push(wallSegment(wall));
+  for (const wall of walls) {
+    if (!wall.blocksView) continue;
+    const span = distance(wall.a, wall.b);
+    const openings = doors
+      .filter((door) => door.wallId === wall.id)
+      .map((door) => {
+        const halfOffset = span > 0 ? Math.min(0.49, door.widthM / span / 2) : 0;
+        return {
+          start: Math.max(0, door.offset - halfOffset),
+          end: Math.min(1, door.offset + halfOffset)
+        };
+      })
+      .sort((first, second) => first.start - second.start);
+    if (!openings.length) {
+      segments.push(wallSegment(wall));
+      continue;
+    }
+
+    let cursor = 0;
+    const pointAt = (offset: number): Vec2 => ({
+      x: wall.a.x + (wall.b.x - wall.a.x) * offset,
+      z: wall.a.z + (wall.b.z - wall.a.z) * offset
+    });
+    for (const opening of openings) {
+      if (opening.start > cursor + 1e-4) {
+        segments.push({ a: pointAt(cursor), b: pointAt(opening.start), heightM: wall.heightM });
+      }
+      cursor = Math.max(cursor, opening.end);
+    }
+    if (cursor < 1 - 1e-4) {
+      segments.push({ a: pointAt(cursor), b: pointAt(1), heightM: wall.heightM });
+    }
+  }
   for (const obstacle of obstacles) if (obstacle.blocksView) segments.push(...obstacleSegments(obstacle));
   return segments;
 }
@@ -337,8 +369,65 @@ export function traceWallLoop(walls: PlanWall[], tolerance = 0.05): Vec2[] | nul
   return loop.length >= 3 ? loop : null;
 }
 
+const wallPointKey = (point: Vec2, toleranceM = 0.05) =>
+  `${Math.round(point.x / toleranceM)}:${Math.round(point.z / toleranceM)}`;
+
+/**
+ * Finds the largest actual closed wall cycle while ignoring internal partitions and
+ * smaller inner rooms. This keeps area and optimisation valid on architectural plans
+ * that contain more than a bare exterior rectangle.
+ */
+export function largestClosedWallLoop(walls: PlanWall[]): Vec2[] | null {
+  if (walls.length < 3) return null;
+  const edges = walls.map((wall, index) => ({
+    index,
+    a: wall.a,
+    b: wall.b,
+    aKey: wallPointKey(wall.a),
+    bKey: wallPointKey(wall.b)
+  }));
+  const adjacency = new Map<string, number[]>();
+  for (const edge of edges) {
+    adjacency.set(edge.aKey, [...(adjacency.get(edge.aKey) ?? []), edge.index]);
+    adjacency.set(edge.bKey, [...(adjacency.get(edge.bKey) ?? []), edge.index]);
+  }
+
+  let best: Vec2[] | null = null;
+  let bestArea = 0;
+  let explored = 0;
+  const maxExplorations = Math.max(2_000, walls.length * walls.length * 4);
+  const walk = (startKey: string, currentKey: string, path: Vec2[], used: Set<number>) => {
+    if (explored++ > maxExplorations) return;
+    if (currentKey === startKey && used.size >= 3) {
+      const loop = path.slice(0, -1);
+      const area = polygonArea(loop);
+      if (area > bestArea) {
+        bestArea = area;
+        best = loop;
+      }
+      return;
+    }
+    if (used.size >= walls.length) return;
+    for (const edgeIndex of adjacency.get(currentKey) ?? []) {
+      if (used.has(edgeIndex)) continue;
+      const edge = edges[edgeIndex];
+      const nextKey = edge.aKey === currentKey ? edge.bKey : edge.aKey;
+      const nextPoint = edge.aKey === currentKey ? edge.b : edge.a;
+      used.add(edgeIndex);
+      walk(startKey, nextKey, [...path, nextPoint], used);
+      used.delete(edgeIndex);
+    }
+  };
+
+  for (const edge of edges) {
+    walk(edge.aKey, edge.bKey, [edge.a, edge.b], new Set([edge.index]));
+    walk(edge.bKey, edge.aKey, [edge.b, edge.a], new Set([edge.index]));
+  }
+  return bestArea > 0.5 ? best : null;
+}
+
 /** Enclosed floor area in square metres. Open wall chains never produce a guessed area. */
 export function floorAreaM2(walls: PlanWall[]): number {
-  const loop = traceWallLoop(walls);
+  const loop = traceWallLoop(walls) ?? largestClosedWallLoop(walls);
   return loop ? polygonArea(loop) : 0;
 }

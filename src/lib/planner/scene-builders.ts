@@ -1,4 +1,5 @@
 import type * as THREE_NS from "three";
+import type { CameraHousing } from "@/src/domain/catalog/types";
 import type { FloorPlan, PlanBackdrop, PlanDoor, PlanObstacle, PlanWall, Vec2 } from "@/src/domain/planner/types";
 import type { CameraCoverage } from "@/src/lib/planner/coverage";
 import { obstacleCorners, type RightAngleCorner } from "@/src/lib/planner/geometry";
@@ -235,33 +236,183 @@ export function buildObstacleMesh(THREE: ThreeModule, obstacle: PlanObstacle, se
   return mesh;
 }
 
-/** Small body plus a heading spike, so yaw is readable in the top view. */
+/**
+ * A recognisable bullet camera with lens, visor, wall bracket and a small direction
+ * footprint. The old cone read as a plus sign from above, especially before coverage
+ * was enabled; this silhouette remains legible in both plan and orbit views.
+ */
 export function buildCameraMarker(
   THREE: ThreeModule,
   id: string,
   position: Vec2,
   mountHeightM: number,
   yawDeg: number,
-  selected: boolean
+  selected: boolean,
+  housing: CameraHousing = "bullet"
 ): THREE_NS.Group {
   const group = new THREE.Group();
   const color = selected ? palette.cameraSelected : palette.cameraBody;
+  const yawRad = (yawDeg * Math.PI) / 180;
+  const shellMaterial = new THREE.MeshStandardMaterial({ color, roughness: 0.32, metalness: 0.35 });
+  const darkMaterial = new THREE.MeshStandardMaterial({ color: 0x17364d, roughness: 0.2, metalness: 0.55 });
+  const glassMaterial = new THREE.MeshStandardMaterial({
+    color: selected ? 0x7dd3fc : 0x38bdf8,
+    emissive: selected ? 0x0ea5e9 : 0x075985,
+    emissiveIntensity: 0.75,
+    roughness: 0.08,
+    metalness: 0.7
+  });
+  const heading = new THREE.Group();
+  heading.position.y = mountHeightM;
+  heading.rotation.y = -yawRad;
 
-  const body = new THREE.Mesh(
-    new THREE.ConeGeometry(0.32, 0.8, 4),
-    new THREE.MeshStandardMaterial({ color, roughness: 0.4, metalness: 0.3 })
-  );
-  body.rotation.z = Math.PI / 2;
-  body.rotation.y = -(yawDeg * Math.PI) / 180;
-  body.position.y = mountHeightM;
-  group.add(body);
+  if (housing === "bullet") {
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.21, 0.24, 1.08, 20), shellMaterial);
+    body.rotation.z = Math.PI / 2;
+    heading.add(body);
+
+    const rear = new THREE.Mesh(new THREE.SphereGeometry(0.235, 18, 12), shellMaterial);
+    rear.scale.x = 0.72;
+    rear.position.x = -0.52;
+    heading.add(rear);
+
+    const lensHousing = new THREE.Mesh(new THREE.CylinderGeometry(0.19, 0.22, 0.13, 20), darkMaterial);
+    lensHousing.rotation.z = Math.PI / 2;
+    lensHousing.position.x = 0.57;
+    heading.add(lensHousing);
+
+    const lens = new THREE.Mesh(new THREE.CircleGeometry(0.115, 24), glassMaterial);
+    lens.rotation.y = Math.PI / 2;
+    lens.position.x = 0.642;
+    heading.add(lens);
+
+    const visor = new THREE.Mesh(new THREE.BoxGeometry(0.78, 0.07, 0.43), shellMaterial);
+    visor.position.set(0.25, 0.245, 0);
+    heading.add(visor);
+
+    const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.09, 0.28, 12), darkMaterial);
+    neck.position.set(-0.42, -0.29, 0);
+    heading.add(neck);
+  } else if (housing === "dome") {
+    const ceilingPlate = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 0.12, 28), shellMaterial);
+    ceilingPlate.position.y = 0.08;
+    heading.add(ceilingPlate);
+
+    const dome = new THREE.Mesh(
+      new THREE.SphereGeometry(0.34, 28, 16),
+      new THREE.MeshStandardMaterial({
+        color: selected ? 0xfbbf24 : 0xb9d7e8,
+        roughness: 0.14,
+        metalness: 0.18,
+        transparent: true,
+        opacity: 0.86
+      })
+    );
+    dome.scale.y = 0.62;
+    dome.position.y = -0.16;
+    heading.add(dome);
+
+    const domeLens = new THREE.Mesh(new THREE.SphereGeometry(0.115, 18, 12), glassMaterial);
+    domeLens.scale.x = 0.7;
+    domeLens.position.set(0.26, -0.18, 0);
+    heading.add(domeLens);
+  } else if (housing === "turret") {
+    const base = new THREE.Mesh(new THREE.CylinderGeometry(0.37, 0.37, 0.16, 24), shellMaterial);
+    base.position.y = -0.02;
+    heading.add(base);
+
+    const ball = new THREE.Mesh(new THREE.SphereGeometry(0.27, 24, 16), shellMaterial);
+    ball.position.set(0.08, 0.05, 0);
+    heading.add(ball);
+
+    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.18, 0.42, 20), darkMaterial);
+    barrel.rotation.z = Math.PI / 2;
+    barrel.position.set(0.31, 0.03, 0);
+    heading.add(barrel);
+
+    const turretLens = new THREE.Mesh(new THREE.CircleGeometry(0.095, 22), glassMaterial);
+    turretLens.rotation.y = Math.PI / 2;
+    turretLens.position.set(0.525, 0.03, 0);
+    heading.add(turretLens);
+  } else {
+    const canopy = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.34, 0.18, 28), shellMaterial);
+    canopy.position.y = 0.13;
+    heading.add(canopy);
+
+    const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, 0.24, 18), darkMaterial);
+    neck.position.y = -0.08;
+    heading.add(neck);
+
+    const gimbal = new THREE.Mesh(new THREE.SphereGeometry(0.34, 26, 18), shellMaterial);
+    gimbal.position.y = -0.32;
+    heading.add(gimbal);
+
+    const ptzLensHousing = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.18, 0.3, 20), darkMaterial);
+    ptzLensHousing.rotation.z = Math.PI / 2;
+    ptzLensHousing.position.set(0.28, -0.34, 0);
+    heading.add(ptzLensHousing);
+
+    const ptzLens = new THREE.Mesh(new THREE.CircleGeometry(0.095, 22), glassMaterial);
+    ptzLens.rotation.y = Math.PI / 2;
+    ptzLens.position.set(0.435, -0.34, 0);
+    heading.add(ptzLens);
+
+    const patrolHalo = new THREE.Mesh(
+      new THREE.RingGeometry(0.48, 0.55, 40),
+      new THREE.MeshBasicMaterial({
+        color: selected ? 0xf59e0b : 0x22c1dc,
+        transparent: true,
+        opacity: 0.78,
+        side: THREE.DoubleSide,
+        depthWrite: false
+      })
+    );
+    patrolHalo.rotation.x = -Math.PI / 2;
+    patrolHalo.position.y = -0.58;
+    heading.add(patrolHalo);
+  }
+  group.add(heading);
 
   const pole = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.05, 0.05, mountHeightM, 6),
+    new THREE.CylinderGeometry(0.04, 0.055, Math.max(0.1, mountHeightM - 0.25), 10),
     new THREE.MeshStandardMaterial({ color: 0x8fa6b6 })
   );
-  pole.position.y = mountHeightM / 2;
+  pole.position.y = Math.max(0.1, (mountHeightM - 0.25) / 2);
   group.add(pole);
+
+  const footprint = new THREE.Mesh(
+    new THREE.RingGeometry(
+      housing === "ptz" ? 0.46 : 0.34,
+      housing === "ptz" ? (selected ? 0.68 : 0.61) : (selected ? 0.58 : 0.49),
+      32
+    ),
+    new THREE.MeshBasicMaterial({
+      color: selected ? 0xf59e0b : 0x38bdf8,
+      transparent: true,
+      opacity: selected ? 0.5 : 0.28,
+      side: THREE.DoubleSide,
+      depthWrite: false
+    })
+  );
+  footprint.rotation.x = -Math.PI / 2;
+  footprint.position.y = 0.035;
+  group.add(footprint);
+
+  if (housing !== "ptz") {
+    const direction = new THREE.Mesh(
+      new THREE.ConeGeometry(housing === "dome" ? 0.17 : 0.22, housing === "dome" ? 0.46 : 0.62, 3),
+      new THREE.MeshBasicMaterial({
+        color: selected ? 0xf59e0b : 0x0ea5e9,
+        transparent: true,
+        opacity: 0.72,
+        depthWrite: false
+      })
+    );
+    direction.rotation.z = -Math.PI / 2;
+    direction.rotation.y = -yawRad;
+    direction.position.set(Math.cos(yawRad) * 0.72, 0.055, Math.sin(yawRad) * 0.72);
+    group.add(direction);
+  }
 
   group.position.set(position.x, 0, position.z);
   group.userData = { kind: "camera", id };

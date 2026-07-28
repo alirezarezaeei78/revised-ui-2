@@ -2,7 +2,7 @@
 
 import { BrickWall, Camera, Compass, Cuboid, DoorOpen, Ruler, Trash2 } from "lucide-react";
 import type { FloorPlan, PlanDefaults, PlanSelection, PlanTool } from "@/src/domain/planner/types";
-import type { SurveillanceTask } from "@/src/domain/catalog/types";
+import type { CameraHousing, SurveillanceTask } from "@/src/domain/catalog/types";
 import { cameraFovDeg, computeCameraCoverage, focalForTask } from "@/src/lib/planner/coverage";
 import { collectOccluders } from "@/src/lib/planner/geometry";
 import { sensorOptions } from "@/src/lib/chatbot/slots";
@@ -25,6 +25,25 @@ const taskLabels: Record<SurveillanceTask, string> = {
 };
 
 const megapixelOptions = [2, 3, 4, 5, 6, 8, 12];
+
+const housingBehavior: Record<CameraHousing, { title: string; description: string }> = {
+  bullet: {
+    title: "دید ثابت و جهت‌دار",
+    description: "مناسب پیرامون و مسیرهای طولی؛ محل نصب دیواری و جهت دید آن ثابت است."
+  },
+  dome: {
+    title: "نصب سقفی و پوشش کم‌جلب‌توجه",
+    description: "لنز داخل محفظه دام ثابت است؛ جهت دید دارد اما ظاهر آن جهت دوربین را کمتر آشکار می‌کند."
+  },
+  turret: {
+    title: "تنظیم‌پذیر دیواری یا سقفی",
+    description: "هد دوربین آزادانه تنظیم می‌شود و برای فضاهای داخلی با دسترسی ساده‌تر مناسب است."
+  },
+  ptz: {
+    title: "گشت چرخشی ۳۶۰ درجه",
+    description: "محدوده نمایش‌داده‌شده پوشش بالقوه گشت PTZ است؛ همه جهت‌ها به‌صورت هم‌زمان ضبط نمی‌شوند."
+  }
+};
 
 export function PlanInspector({
   floor,
@@ -250,8 +269,59 @@ export function PlanInspector({
     onFloorChange({ ...floor, cameras: floor.cameras.map((item) => (item.id === camera.id ? { ...item, ...patch } : item)) });
   const updateOptics = (patch: Partial<typeof camera.optics>) => update({ optics: { ...camera.optics, ...patch } });
 
-  const coverage = computeCameraCoverage(camera, collectOccluders(floor.walls, floor.obstacles), 48);
+  const coverage = computeCameraCoverage(camera, collectOccluders(floor.walls, floor.obstacles, floor.doors), 48);
   const fov = cameraFovDeg(camera);
+
+  if (camera.definitionId) {
+    const housing = camera.housing === "bullet" ? "بولت"
+      : camera.housing === "dome" ? "دام"
+        : camera.housing === "ptz" ? "چرخشی PTZ" : "تورت";
+    const features = [
+      camera.features?.microphone ? "میکروفون" : "",
+      camera.features?.colorNightVision ? "دید در شب رنگی" : "",
+      camera.features?.weatherproof ? "مقاوم فضای باز" : ""
+    ].filter(Boolean);
+    const behavior = housingBehavior[camera.housing ?? "turret"];
+
+    return (
+      <aside className="plan-inspector plan-defined-camera-inspector">
+        <header><Camera size={17} aria-hidden="true" /><strong>{camera.name}</strong></header>
+        <div className="plan-defined-camera-group"><span>گروه</span><strong>{camera.groupName || "بدون گروه"}</strong></div>
+        <div className={`plan-camera-housing-note is-${camera.housing ?? "turret"}`}>
+          <Compass size={16} aria-hidden="true" />
+          <div><strong>{behavior.title}</strong><span>{behavior.description}</span></div>
+        </div>
+        <p>مشخصات فنی این دوربین از گروه تعریف‌شده می‌آید و در مرحله جانمایی قفل است.</p>
+        <div className="plan-field-grid">
+          <div className="plan-field-readout"><span>نوع بدنه</span><strong>{housing}</strong></div>
+          <div className="plan-field-readout"><span>هدف</span><strong>{taskLabels[camera.goal]}</strong></div>
+          <div className="plan-field-readout"><span>رزولوشن</span><strong>{camera.optics.megapixel} MP</strong></div>
+          <div className="plan-field-readout"><span>لنز</span><strong>{camera.optics.focalMm} mm</strong></div>
+          <div className="plan-field-readout"><span>ارتفاع نصب</span><strong>{camera.optics.mountHeightM} متر</strong></div>
+          <div className="plan-field-readout"><span>برد مؤثر</span><strong>{camera.optics.maxRangeM} متر</strong></div>
+        </div>
+        {features.length > 0 ? <div className="plan-camera-feature-chips">{features.map((feature) => <span key={feature}>{feature}</span>)}</div> : null}
+        <NumberField
+          label={camera.housing === "ptz" ? "جهت اولیه گشت PTZ" : "جهت دوربین"}
+          unit="درجه"
+          value={camera.yawDeg}
+          min={0}
+          max={359}
+          step={5}
+          onChange={(value) => update({ yawDeg: value })}
+        />
+        <div className="plan-dori-readout">
+          <div><span>زاویه دید</span><strong>{fov.toFixed(1)}°</strong></div>
+          <div><span>کشف</span><strong>{formatFa(coverage.doriDistances.detect, 1)} m</strong></div>
+          <div><span>بازشناسی</span><strong>{formatFa(coverage.doriDistances.recognize, 1)} m</strong></div>
+          <div><span>شناسایی</span><strong>{formatFa(coverage.doriDistances.identify, 1)} m</strong></div>
+        </div>
+        <button type="button" className="plan-delete" onClick={() => { onFloorChange({ ...floor, cameras: floor.cameras.filter((item) => item.id !== camera.id) }); onSelect(null); }}>
+          <Trash2 size={15} aria-hidden="true" />برداشتن از نقشه
+        </button>
+      </aside>
+    );
+  }
 
   return (
     <aside className="plan-inspector">

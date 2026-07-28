@@ -1,4 +1,4 @@
-import type { SurveillanceTask } from "@/src/domain/catalog/types";
+import type { CameraHousing, SurveillanceTask } from "@/src/domain/catalog/types";
 
 /**
  * Floor plan model for the site designer.
@@ -69,13 +69,37 @@ export type PlanCameraOptics = {
 export type PlanCamera = {
   id: string;
   name: string;
+  /** Fixed wizard inventory slot used to prevent arbitrary camera creation. */
+  definitionId?: string;
   /** Links the placement back to a wizard zone so counts and goals stay in sync. */
   zoneId?: string;
+  groupName?: string;
+  housing?: CameraHousing;
+  features?: {
+    microphone: boolean;
+    colorNightVision: boolean;
+    weatherproof: boolean;
+  };
   position: Vec2;
   yawDeg: number;
   goal: SurveillanceTask;
   optics: PlanCameraOptics;
   productId?: string;
+};
+
+export type PlanCameraDefinition = {
+  id: string;
+  zoneId: string;
+  groupName: string;
+  name: string;
+  housing: CameraHousing;
+  goal: SurveillanceTask;
+  optics: PlanCameraOptics;
+  features: {
+    microphone: boolean;
+    colorNightVision: boolean;
+    weatherproof: boolean;
+  };
 };
 
 /**

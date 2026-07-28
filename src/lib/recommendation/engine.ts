@@ -20,7 +20,7 @@ const planProfiles = [
 ] as const;
 
 type PlanProfile = (typeof planProfiles)[number];
-type CameraSelection = { zone: ProjectZone; product: CatalogProduct; specs: CameraSpecs; evaluation: CameraZoneEvaluation };
+type CameraSelection = { zone: ProjectZone; product: CatalogProduct; specs: CameraSpecs; evaluation: CameraZoneEvaluation; relaxed?: boolean };
 type StorageSelection = { storage: CatalogProduct; driveCount: number; raidLevel: RaidLevel; hotSpareCount: number; rawTb: number; usableTb: number; cost: number };
 type RecorderStorageSelection = StorageSelection & { recorder: CatalogProduct; codec: string };
 type SwitchSelection = { product: CatalogProduct; quantity: number; poeBudgetW: number; expansionPorts: number };
@@ -47,6 +47,39 @@ function zoneWithProfilePpm(zone: ProjectZone, profile: PlanProfile): ProjectZon
   return { ...zone, minimumPpm: Math.round(basePpm * profile.ppmFactor) };
 }
 
+/** One catalog camera is selected per independently configured camera row. */
+function expandCameraZones(zones: ProjectZone[]): ProjectZone[] {
+  return zones.flatMap((zone) => {
+    if (!zone.cameras?.length) return [zone];
+    return zone.cameras.map((camera) => ({
+      ...zone,
+      id: `${zone.id}-${camera.id}`,
+      name: `${zone.name} / ${camera.label}`,
+      cameraCount: 1,
+      cameras: [camera],
+      targetDistanceM: camera.targetDistanceM,
+      sceneWidthM: camera.sceneWidthM,
+      mountingHeightM: camera.mountingHeightM,
+      targetHeightM: camera.targetHeightM,
+      cameraTiltDeg: camera.cameraTiltDeg,
+      minimumPpm: camera.minimumPpm,
+      measuredBitrateKbps: camera.measuredBitrateKbps,
+      cameraConfig: {
+        label: camera.label,
+        housing: camera.housing,
+        megapixel: camera.megapixel,
+        sensorWidthMm: camera.sensorWidthMm,
+        focalMm: camera.focalMm,
+        irRangeM: camera.irRangeM,
+        maxRangeM: camera.maxRangeM,
+        microphone: camera.microphone,
+        colorNightVision: camera.colorNightVision,
+        weatherproof: camera.weatherproof
+      }
+    }));
+  });
+}
+
 function evaluateCameraProduct(product: CatalogProduct, zones: ProjectZone[], brief: ProjectBrief) {
   const specs = product.specs as CameraSpecs;
   return zones.map((zone) => ({ zone, evaluation: evaluateCameraForZone(specs, zone, brief) }));
@@ -59,15 +92,23 @@ function selectCameras(products: CatalogProduct[], zones: ProjectZone[], brief: 
     const candidates = products
       .filter((product) => product.category === "camera" && available(product))
       .map((product) => ({ product, specs: product.specs as CameraSpecs, evaluation: evaluateCameraForZone(product.specs as CameraSpecs, zone, brief) }))
-      .filter(({ evaluation }) => evaluation.accepted)
       .sort((a, b) => {
+        const acceptedA = a.evaluation.accepted ? 0 : 1;
+        const acceptedB = b.evaluation.accepted ? 0 : 1;
         const preferredA = brief.preferredBrand && a.product.brand === brief.preferredBrand ? 0 : 1;
         const preferredB = brief.preferredBrand && b.product.brand === brief.preferredBrand ? 0 : 1;
-        return preferredA - preferredB || productCost(a.product) - productCost(b.product) || b.evaluation.actualPpm - a.evaluation.actualPpm;
+        return acceptedA - acceptedB
+          || a.evaluation.failedConstraints.length - b.evaluation.failedConstraints.length
+          || preferredA - preferredB
+          || productCost(a.product) - productCost(b.product)
+          || b.evaluation.actualPpm - a.evaluation.actualPpm;
       });
     const selected = candidates[0];
     if (!selected) return { selections: [], failedZone: zone };
-    selections.push({ zone, ...selected });
+    // A sparse live catalogue should not collapse the complete engineering result.
+    // Keep the closest in-stock item, but carry every failed constraint into the UI so
+    // it is visibly a review candidate rather than a falsely certified match.
+    selections.push({ zone, ...selected, relaxed: !selected.evaluation.accepted });
   }
   return { selections };
 }
@@ -320,7 +361,7 @@ function scorePlan(plan: RecommendationPlan, brief: ProjectBrief, minPrice: numb
 }
 
 export function recommendProducts(products: CatalogProduct[], brief: ProjectBrief, calibrationFactors: BitrateCalibrationFactors = {}): RecommendationResult {
-  const zones = brief.zones?.length ? brief.zones : [];
+  const zones = brief.zones?.length ? expandCameraZones(brief.zones) : [];
   const rejected: RecommendationResult["rejected"] = [];
   const plans: RecommendationPlan[] = [];
   if (!zones.length) return { project: brief, plans, rejected: [{ productName: "پروژه", reason: "حداقل یک ناحیه با هندسه کامل لازم است." }], generatedAt: new Date().toISOString(), dataMode: "mock-fallback", calculation: calculationMetadata(brief) };
@@ -332,6 +373,13 @@ export function recommendProducts(products: CatalogProduct[], brief: ProjectBrie
       continue;
     }
     const cameraSelections = cameraResult.selections;
+    const relaxedSelections = cameraSelections.filter((selection) => selection.relaxed);
+    for (const selection of relaxedSelections) {
+      rejected.push({
+        productName: `بازبینی دوربین ${selection.zone.name}`,
+        reason: `نزدیک‌ترین کالای موجود انتخاب شد؛ ${selection.evaluation.failedConstraints.join("؛ ")}`
+      });
+    }
     const totalVideoBitrateKbps = cameraSelections.reduce((sum, item) => sum + (item.zone.measuredBitrateKbps || item.specs.recommendedBitrateKbps * (calibrationFactors[item.zone.goal] || 1)) * item.zone.cameraCount, 0);
     const bandwidthMbps = totalVideoBitrateKbps / 1_000;
     const storage = calculateSurveillanceStorage({
@@ -369,7 +417,8 @@ export function recommendProducts(products: CatalogProduct[], brief: ProjectBrie
 
     const cameraItemMap = new Map<string, { product: CatalogProduct; quantity: number; reasons: string[] }>();
     for (const selection of cameraSelections) {
-      const reason = `${selection.zone.name}: ${TASK_LABELS[selection.zone.goal]}، ${round(selection.evaluation.actualPpm)} PPM، HFOV ${round(selection.evaluation.selectedHorizontalFovDeg)}°`;
+      const reviewLabel = selection.relaxed ? " ⚠ نیازمند بازبینی" : "";
+      const reason = `${selection.zone.name}: ${TASK_LABELS[selection.zone.goal]}، ${round(selection.evaluation.actualPpm)} PPM، HFOV ${round(selection.evaluation.selectedHorizontalFovDeg)}°${reviewLabel}`;
       const existing = cameraItemMap.get(selection.product.id);
       if (existing) { existing.quantity += selection.zone.cameraCount; existing.reasons.push(reason); }
       else cameraItemMap.set(selection.product.id, { product: selection.product, quantity: selection.zone.cameraCount, reasons: [reason, `فاصله مایل ${round(selection.evaluation.slantDistanceM)}m و Tilt لازم ${round(selection.evaluation.requiredTiltDeg)}°`] });
@@ -396,7 +445,13 @@ export function recommendProducts(products: CatalogProduct[], brief: ProjectBrie
     const infrastructure = calculateInfrastructure(brief, engineeringMap, networkSwitch.quantity, upsLoadW, calculateUpsRequirements(upsLoadW).requiredOutputW);
     const plan: RecommendationPlan = {
       id: profile.id, title: profile.title, subtitle: profile.subtitle, score: 0, totalPrice, items,
-      highlights: [`${round(Math.min(...ppmValues))} PPM حداقل واقعی`, `${round(storage.recordingDutyCycle * 100)}٪ چرخه ضبط`, `${round(remote.outgoingBandwidthMbps)}Mbps مشاهده Remote`, `${floorCount} نقطه توزیع شبکه`],
+      highlights: [
+        ...(relaxedSelections.length ? [`${relaxedSelections.length} دوربین نزدیک به نیاز؛ بازبینی فنی لازم`] : []),
+        `${round(Math.min(...ppmValues))} PPM حداقل واقعی`,
+        `${round(storage.recordingDutyCycle * 100)}٪ چرخه ضبط`,
+        `${round(remote.outgoingBandwidthMbps)}Mbps مشاهده Remote`,
+        `${floorCount} نقطه توزیع شبکه`
+      ],
       metrics: {
         bandwidthMbps: round(bandwidthMbps), storageBaseTb: round(storage.baseStorageTb), storageRequiredTb: round(storage.requiredStorageTb),
         storageRawTb: round(recorderStorage.rawTb), storageUsableTb: round(recorderStorage.usableTb), raidLevel: raidLabel,
@@ -411,7 +466,15 @@ export function recommendProducts(products: CatalogProduct[], brief: ProjectBrie
       scoreBreakdown: { technicalFit: 0, capacityHeadroom: 0, imageQuality: 0, reliability: 0, stockAvailability: 0, priceFit: 0, preferredBrand: 0 },
       constraints: {
         checked: ["PPM، عرض صحنه و HFOV هر ناحیه", "ارتفاع، فاصله و Tilt", "تفکیک Face/Plate/ANPR", "Channel، Incoming/Outgoing، Decode و Codec NVR", "Per-port PoE، بودجه کل و Uplink", "توزیع سوئیچ براساس طبقات", "Motion/VBR/Audio/Overhead/Reserve ذخیره‌سازی", "W، VA و Runtime برآوردی UPS", "بودجه عددی تجهیزات"],
-        pending: ["سرعت، شاتر و زاویه افقی/عمودی پلاک در ANPR", "Occlusion و موانع واقعی سایت", "Runtime از منحنی رسمی بار UPS", "هزینه کابل‌کشی و نصب"]
+        pending: [
+          ...relaxedSelections.flatMap((selection) =>
+            selection.evaluation.failedConstraints.map((reason) => `${selection.zone.name}: ${reason}`)
+          ),
+          "سرعت، شاتر و زاویه افقی/عمودی پلاک در ANPR",
+          "Occlusion و موانع واقعی سایت",
+          "Runtime از منحنی رسمی بار UPS",
+          "هزینه کابل‌کشی و نصب"
+        ]
       },
       evaluations: [], engineeringMap, infrastructure
     };

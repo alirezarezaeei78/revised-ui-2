@@ -2,6 +2,7 @@ import type { SurveillanceTask } from "@/src/domain/catalog/types";
 import type { FloorPlan, PlanCamera, Vec2 } from "@/src/domain/planner/types";
 import {
   boundsOf,
+  castRay,
   collectOccluders,
   distance,
   floorAreaM2,
@@ -46,6 +47,7 @@ export type CoverageBand = { key: DoriKey; label: string; ppm: number; color: st
 
 export type CameraCoverage = {
   cameraId: string;
+  coverageMode: "fixed" | "ptz-patrol";
   fovDeg: number;
   headingRad: number;
   horizontalPixels: number;
@@ -54,6 +56,24 @@ export type CameraCoverage = {
   bands: CoverageBand[];
   doriDistances: Record<DoriKey, number>;
 };
+
+function radialVisibilityPolygon(
+  origin: Vec2,
+  maxRangeM: number,
+  occluders: Segment[],
+  rays: number,
+  sightHeightAt: (distanceAlongRay: number) => number
+): Vec2[] {
+  const steps = Math.max(36, rays);
+  return Array.from({ length: steps }, (_, index) => {
+    const angle = (index / steps) * Math.PI * 2;
+    const reach = castRay(origin, angle, maxRangeM, occluders, sightHeightAt);
+    return {
+      x: origin.x + Math.cos(angle) * reach,
+      z: origin.z + Math.sin(angle) * reach
+    };
+  });
+}
 
 export function cameraFovDeg(camera: PlanCamera): number {
   return horizontalFovDeg(camera.optics.focalMm, camera.optics.sensorWidthMm);
@@ -87,8 +107,11 @@ export function computeCameraCoverage(camera: PlanCamera, occluders: Segment[], 
   const horizontalPixels = horizontalPixelsForMegapixel(camera.optics.megapixel);
   const effectiveRangeM = Math.max(1, camera.optics.maxRangeM);
   const sightHeightAt = sightHeightFactory(camera, effectiveRangeM);
+  const isPtzPatrol = camera.housing === "ptz";
 
-  const polygon = visibilityFan(camera.position, headingRad, fovRad, effectiveRangeM, occluders, rays, sightHeightAt);
+  const polygon = isPtzPatrol
+    ? radialVisibilityPolygon(camera.position, effectiveRangeM, occluders, rays, sightHeightAt)
+    : visibilityFan(camera.position, headingRad, fovRad, effectiveRangeM, occluders, rays, sightHeightAt);
 
   const distances = {
     detect: distanceForPixelDensity(horizontalPixels, fovDeg, 25),
@@ -109,12 +132,24 @@ export function computeCameraCoverage(camera: PlanCamera, occluders: Segment[], 
         color: level.color,
         distanceM: distances[level.key],
         polygon: bandRange > 0.2
-          ? visibilityFan(camera.position, headingRad, fovRad, bandRange, occluders, rays, sightHeightAt)
+          ? isPtzPatrol
+            ? radialVisibilityPolygon(camera.position, bandRange, occluders, rays, sightHeightAt)
+            : visibilityFan(camera.position, headingRad, fovRad, bandRange, occluders, rays, sightHeightAt)
           : []
       };
     });
 
-  return { cameraId: camera.id, fovDeg, headingRad, horizontalPixels, effectiveRangeM, polygon, bands, doriDistances: distances };
+  return {
+    cameraId: camera.id,
+    coverageMode: isPtzPatrol ? "ptz-patrol" : "fixed",
+    fovDeg,
+    headingRad,
+    horizontalPixels,
+    effectiveRangeM,
+    polygon,
+    bands,
+    doriDistances: distances
+  };
 }
 
 export type FloorCoverage = {
@@ -133,7 +168,7 @@ export type FloorCoverage = {
  * camera achieves there, because a point is only as well covered as its best view of it.
  */
 export function computeFloorCoverage(floor: FloorPlan, gridStepM = 1): FloorCoverage {
-  const occluders = collectOccluders(floor.walls, floor.obstacles);
+  const occluders = collectOccluders(floor.walls, floor.obstacles, floor.doors);
   const cameras = floor.cameras.map((camera) => computeCameraCoverage(camera, occluders));
   const areaM2 = floorAreaM2(floor.walls);
 
