@@ -31,7 +31,7 @@ export type Answer = {
   assumptions?: string[];
   tool?: { slug: string; label: string };
   followUps?: string[];
-  source: "calculation" | "knowledge" | "catalog" | "system";
+  source: "calculation" | "knowledge" | "catalog" | "llm" | "system";
 };
 
 const defaultMegapixel = 4;

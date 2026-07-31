@@ -1,17 +1,17 @@
 "use client";
 
-import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import { Headset, MessageCircle, X } from "lucide-react";
+import { BrainCircuit, Maximize2, MessageCircle, Minimize2, X } from "lucide-react";
 import { ChatPanel } from "@/src/components/chat/ChatPanel";
 
 /** Routes where a floating widget would get in the way. */
-const hiddenOn = ["/login", "/register", "/assistant"];
+const hiddenOn = ["/login", "/register"];
 
 export function ChatAssistant() {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
+  const [maximized, setMaximized] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -21,6 +21,11 @@ export function ChatAssistant() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [open]);
+
+  useEffect(() => {
+    document.body.classList.toggle("chat-assistant-maximized", open && maximized);
+    return () => document.body.classList.remove("chat-assistant-maximized");
+  }, [maximized, open]);
 
   if (hiddenOn.some((route) => pathname === route || pathname.startsWith(`${route}/`))) return null;
 
@@ -37,20 +42,38 @@ export function ChatAssistant() {
       </button>
 
       {open ? (
-        <div className="chat-dock" role="dialog" aria-label="دستیار فنی همیار دوربین">
+        <div
+          className={maximized ? "chat-dock is-maximized" : "chat-dock"}
+          role="dialog"
+          aria-modal={maximized}
+          aria-label="هوش‌یار؛ دستیار محلی امنیت و شبکه"
+        >
           <header className="chat-dock-head">
             <span className="chat-dock-avatar">
-              <Headset size={18} aria-hidden="true" />
+              <BrainCircuit size={18} aria-hidden="true" />
             </span>
             <div>
-              <strong>دستیار فنی</strong>
-              <small>پاسخ به سوالات دوربین و شبکه</small>
+              <strong>هوش‌یار</strong>
+              <small>مدل محلی دوربین، شبکه و امنیت</small>
             </div>
             <div className="chat-dock-actions">
-              <Link href="/assistant" className="chat-dock-expand" aria-label="گفت‌وگوی کامل" title="گفت‌وگوی کامل">
-                <span>گفت‌وگوی کامل</span>
-              </Link>
-              <button type="button" onClick={() => setOpen(false)} aria-label="بستن">
+              <button
+                type="button"
+                className="chat-dock-expand"
+                onClick={() => setMaximized((value) => !value)}
+                aria-label={maximized ? "بازگرداندن اندازه پنجره" : "بزرگ‌نمایی دستیار"}
+                title={maximized ? "بازگرداندن اندازه پنجره" : "بزرگ‌نمایی دستیار"}
+              >
+                {maximized ? <Minimize2 size={16} aria-hidden="true" /> : <Maximize2 size={16} aria-hidden="true" />}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setOpen(false);
+                  setMaximized(false);
+                }}
+                aria-label="بستن"
+              >
                 <X size={17} aria-hidden="true" />
               </button>
             </div>

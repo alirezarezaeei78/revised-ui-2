@@ -59,6 +59,39 @@ export const seedPasswords = {
   free: "HmyFree-2Wx6!Pn8#Rs4"
 };
 
+/** Seed accounts are a local-development convenience, never a production fallback. */
+function developmentSeedAccountsEnabled() {
+  return process.env.NODE_ENV === "development" && !process.env.DATABASE_URL?.trim();
+}
+
+function developmentSeedUsers(): UserAccount[] {
+  const now = new Date().toISOString();
+  const expiredTrialSignup = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
+  return [
+    {
+      id: "seed-admin", username: "admin", role: "admin", plan: "pro", isFreeAccount: false,
+      displayName: "مدیر سیستم", signupAt: now, createdAt: now, failedLogins: 0,
+      loginCount: 1, trialDays: defaultTrialDays, passwordPreview: seedPasswords.admin, protected: true
+    },
+    {
+      id: "seed-user", username: "user", role: "user", plan: "pro", isFreeAccount: false,
+      displayName: "کاربر حرفه‌ای", signupAt: now, createdAt: now, failedLogins: 0,
+      loginCount: 1, trialDays: defaultTrialDays, passwordPreview: seedPasswords.user, protected: true
+    },
+    {
+      id: "seed-free", username: "free", role: "user", plan: "free", isFreeAccount: true,
+      displayName: "کاربر تست رایگان", signupAt: expiredTrialSignup, createdAt: expiredTrialSignup,
+      failedLogins: 0, loginCount: 1, trialDays: defaultTrialDays,
+      passwordPreview: seedPasswords.free, protected: true
+    }
+  ];
+}
+
+function developmentSeedUser(usernameOrId: string) {
+  if (!developmentSeedAccountsEnabled()) return undefined;
+  return developmentSeedUsers().find((user) => user.username === usernameOrId || user.id === usernameOrId);
+}
+
 const globalState = globalThis as typeof globalThis & {
   __hamyarAuthState?: AuthState;
   __hamyarSchemaReady?: Promise<void>;
@@ -109,7 +142,36 @@ function toIso(value?: Date | string | null) {
   return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
 }
 
-function mapDbUser(row: any): UserAccount {
+type DbUserRow = {
+  id?: unknown;
+  username?: unknown;
+  role?: unknown;
+  plan?: unknown;
+  is_free_account?: boolean | null;
+  isFreeAccount?: boolean | null;
+  display_name?: unknown;
+  displayName?: unknown;
+  signup_at?: Date | string | null;
+  signupAt?: Date | string | null;
+  created_at?: Date | string | null;
+  createdAt?: Date | string | null;
+  last_login_at?: Date | string | null;
+  lastLoginAt?: Date | string | null;
+  locked_until?: unknown;
+  failed_logins?: unknown;
+  failedLogins?: unknown;
+  login_count?: unknown;
+  loginCount?: unknown;
+  trial_days?: unknown;
+  trialDays?: unknown;
+  password_preview?: unknown;
+  passwordPreview?: unknown;
+  is_protected?: unknown;
+  isProtected?: unknown;
+};
+
+function mapDbUser(row: DbUserRow): UserAccount {
+  const passwordPreview = row.password_preview ?? row.passwordPreview;
   return {
     id: String(row.id),
     username: String(row.username),
@@ -124,7 +186,7 @@ function mapDbUser(row: any): UserAccount {
     failedLogins: Number(row.failed_logins ?? row.failedLogins ?? 0),
     loginCount: Number(row.login_count ?? row.loginCount ?? 1),
     trialDays: Number(row.trial_days ?? row.trialDays ?? defaultTrialDays),
-    passwordPreview: row.password_preview ?? row.passwordPreview ?? undefined,
+    passwordPreview: passwordPreview == null ? undefined : String(passwordPreview),
     protected: Boolean(row.is_protected ?? row.isProtected)
   };
 }
@@ -263,12 +325,16 @@ export async function setDefaultTrialDays(days: number) {
 }
 
 export async function getUser(username: string) {
+  const localUser = developmentSeedUser(username);
+  if (localUser) return localUser;
   await ensureAuthSchema();
   const result = await query("SELECT * FROM users WHERE username = $1", [username]);
   return result.rows[0] ? mapDbUser(result.rows[0]) : undefined;
 }
 
 export async function getUserById(id: string) {
+  const localUser = developmentSeedUser(id);
+  if (localUser) return localUser;
   await ensureAuthSchema();
   const result = await query("SELECT * FROM users WHERE id = $1", [id]);
   return result.rows[0] ? mapDbUser(result.rows[0]) : undefined;
@@ -292,6 +358,18 @@ export async function upsertMobileUser(username: string) {
 }
 
 export async function verifyPassword(username: string, password: string) {
+  if (developmentSeedAccountsEnabled()) {
+    const user = developmentSeedUsers().find((candidate) => candidate.username === username);
+    const passwordKey = user?.username as keyof typeof seedPasswords | undefined;
+    if (!user || !passwordKey || !safeEqual(seedPasswords[passwordKey], password)) {
+      return { ok: false as const, error: "نام کاربری یا رمز عبور اشتباه است." };
+    }
+    return {
+      ok: true as const,
+      user: { ...user, lastLoginAt: new Date().toISOString(), loginCount: user.loginCount + 1 }
+    };
+  }
+
   await ensureAuthSchema();
   const result = await query("SELECT * FROM users WHERE username = $1", [username]);
   const row = result.rows[0];
@@ -528,6 +606,7 @@ async function recordSuccessfulLogin(userId: string, loginAt: Date, incrementLog
 }
 
 export async function recordUserActivity(userId: string) {
+  if (developmentSeedAccountsEnabled() && developmentSeedUser(userId)) return;
   await ensureAuthSchema();
   await query(
     `INSERT INTO user_presence (user_id, last_seen_at)

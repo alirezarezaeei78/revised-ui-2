@@ -109,12 +109,21 @@ export type SourceCatalogProduct = {
   stockStatus: StockStatus;
   stockQuantity: number;
   sourceUrl: string;
+  source: "mock-ddcpersia" | "woocommerce";
   sourceModifiedAt?: string;
   images: { url: string; originalUrl: string; alt: string; cached: boolean }[];
   attributes: { name: string; slug?: string; options: string[] }[];
   specs?: CameraSpecs | RecorderSpecs | SwitchSpecs | StorageSpecs | UpsSpecs;
   normalizationStatus: "verified" | "estimated" | "unmapped";
   normalizationWarnings: string[];
+  datasheet?: {
+    brand: string;
+    partNumber: string;
+    sourceUrl: string;
+    sourceTitle: string;
+    facts: Record<string, string | number | boolean | string[]>;
+    verifiedAt: string;
+  };
 };
 
 export type SourceCatalogPage = {

@@ -6,6 +6,30 @@ import { KeyRound, MessageSquareText, ShieldCheck } from "lucide-react";
 
 export type LoginMode = "otp" | "password";
 
+type AuthApiResult = {
+  ok?: boolean;
+  error?: string;
+  message?: string;
+};
+
+async function postAuth(path: string, body: object) {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  const raw = await response.text();
+  let data: AuthApiResult = {};
+  if (raw) {
+    try {
+      data = JSON.parse(raw) as AuthApiResult;
+    } catch {
+      data = { error: "پاسخ سرویس ورود معتبر نبود." };
+    }
+  }
+  return { response, data };
+}
+
 export function LoginForm({ initialMode, initialError = "" }: { initialMode: LoginMode; initialError?: string }) {
   const [phone, setPhone] = useState("");
   const [code, setCode] = useState("");
@@ -22,20 +46,18 @@ export function LoginForm({ initialMode, initialError = "" }: { initialMode: Log
     setError("");
     setMessage("");
 
-    const response = await fetch("/api/auth/login", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ username, password })
-    });
-    const data = await response.json();
-    setPending(false);
-
-    if (!response.ok || !data.ok) {
-      setError(data.error || "ورود انجام نشد.");
-      return;
+    try {
+      const { response, data } = await postAuth("/api/auth/login", { username, password });
+      if (!response.ok || !data.ok) {
+        setError(data.error || "ورود انجام نشد.");
+        return;
+      }
+      window.location.href = "/calculators";
+    } catch {
+      setError("ارتباط با سرویس ورود برقرار نشد.");
+    } finally {
+      setPending(false);
     }
-
-    window.location.href = "/calculators";
   }
 
   async function requestOtp(event: FormEvent<HTMLFormElement>) {
@@ -44,21 +66,19 @@ export function LoginForm({ initialMode, initialError = "" }: { initialMode: Log
     setError("");
     setMessage("");
 
-    const response = await fetch("/api/auth/otp/request", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ phone })
-    });
-    const data = await response.json();
-    setPending(false);
-
-    if (!response.ok || !data.ok) {
-      setError(data.error || "ارسال کد انجام نشد.");
-      return;
+    try {
+      const { response, data } = await postAuth("/api/auth/otp/request", { phone });
+      if (!response.ok || !data.ok) {
+        setError(data.error || "ارسال کد انجام نشد.");
+        return;
+      }
+      setOtpSent(true);
+      setMessage(data.message || "کد ورود ارسال شد.");
+    } catch {
+      setError("ارتباط با سرویس پیامک برقرار نشد.");
+    } finally {
+      setPending(false);
     }
-
-    setOtpSent(true);
-    setMessage(data.message);
   }
 
   async function verifyOtp(event: FormEvent<HTMLFormElement>) {
@@ -66,20 +86,18 @@ export function LoginForm({ initialMode, initialError = "" }: { initialMode: Log
     setPending(true);
     setError("");
 
-    const response = await fetch("/api/auth/otp/verify", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ phone, code })
-    });
-    const data = await response.json();
-    setPending(false);
-
-    if (!response.ok || !data.ok) {
-      setError(data.error || "کد تایید نشد.");
-      return;
+    try {
+      const { response, data } = await postAuth("/api/auth/otp/verify", { phone, code });
+      if (!response.ok || !data.ok) {
+        setError(data.error || "کد تایید نشد.");
+        return;
+      }
+      window.location.href = "/calculators";
+    } catch {
+      setError("ارتباط با سرویس ورود برقرار نشد.");
+    } finally {
+      setPending(false);
     }
-
-    window.location.href = "/calculators";
   }
 
   return (

@@ -13,6 +13,26 @@ import type { Slots } from "@/src/lib/chatbot/slots";
 
 export type CatalogProductRef = { name: string; price: number; sourceUrl: string };
 
+export type CatalogRequest = {
+  category?: ProductCategory;
+  brand?: string;
+  resolutionMp?: number;
+  requestedCount: number;
+  search: string;
+  wantsRecommendation: boolean;
+};
+
+const brandAliases: { pattern: RegExp; brand: string }[] = [
+  { pattern: /(?:تیان\s*دی|تیاندی|tiandy)/i, brand: "Tiandy" },
+  { pattern: /(?:هایک\s*ویژن|هایکویژن|هایک|hikvision)/i, brand: "Hikvision" },
+  { pattern: /(?:داهوا|دیهوا|dahua)/i, brand: "Dahua" },
+  { pattern: /(?:اپتی\s*نت|اپتینت|optinet)/i, brand: "OptiNet" },
+  { pattern: /(?:لول\s*وان|level\s*one|levelone)/i, brand: "LevelOne" },
+  { pattern: /(?:یونی\s*ویو|یونیویو|uniview)/i, brand: "Uniview" },
+  { pattern: /(?:های\s*لوک|هایلوک|hilook)/i, brand: "HiLook" },
+  { pattern: /(?:اکسیس|axis)/i, brand: "Axis" }
+];
+
 const categoryWords: [RegExp, ProductCategory][] = [
   [/دوربین|کمرا|camera|بولت|دام|توربولت|ptz/, "camera"],
   [/nvr|dvr|xvr|دستگاه|ضبط|رکوردر|کاناله|کانال/, "recorder"],
@@ -26,7 +46,8 @@ const stopWords = new Set([
   "قیمت", "قیمتش", "چند", "چنده", "هست", "هستش", "دارید", "داری", "میخوام", "می خوام", "لطفا",
   "بگو", "نشان", "نشون", "بده", "لیست", "موجود", "موجودی", "برای", "یک", "یه", "تا", "از", "با",
   "در", "به", "را", "رو", "و", "چه", "کدوم", "کدام", "بهترین", "ارزان", "ارزون", "گران", "گرون",
-  "ترین", "محصول", "محصولات", "مدل", "خرید", "بخرم", "تومان", "تومن", "هزینه", "میشه", "است"
+  "ترین", "محصول", "محصولات", "مدل", "خرید", "بخرم", "تومان", "تومن", "هزینه", "میشه", "است",
+  "معرفی", "کن", "کنید", "پیشنهاد", "خوب", "مناسب", "مگاپیکسل", "مگاپیکسلی", "مگا", "پیکسل"
 ]);
 
 function detectCategory(text: string): ProductCategory | undefined {
@@ -37,11 +58,18 @@ function detectCategory(text: string): ProductCategory | undefined {
 }
 
 /** Keeps model numbers and brand-like tokens, drops the conversational filler. */
-function buildSearchTerm(text: string): string {
+function detectBrand(text: string) {
+  return brandAliases.find((item) => item.pattern.test(text))?.brand;
+}
+
+function buildSearchTerm(text: string, brand?: string): string {
   const tokens = normalizePersian(text)
     .split(" ")
     .filter((token) => token.length > 1 && !stopWords.has(token))
-    .filter((token) => !/^\d+$/.test(token));
+    .filter((token) => !/^\d+$/.test(token))
+    .filter((token) => !/^\d+(?:\.\d+)?(?:mp|مگاپیکسل)$/.test(token))
+    .filter((token) => !brand || token.toLocaleLowerCase("en") !== brand.toLocaleLowerCase("en"))
+    .filter((token) => !brandAliases.some((item) => item.pattern.test(token)));
 
   const modelLike = tokens.filter((token) => /[a-z]/.test(token) && /[0-9\-]/.test(token));
   if (modelLike.length) return modelLike.slice(0, 2).join(" ");
@@ -52,10 +80,22 @@ function buildSearchTerm(text: string): string {
   return "";
 }
 
+export function parseCatalogRequest(slots: Slots): CatalogRequest {
+  const brand = detectBrand(slots.text);
+  return {
+    category: detectCategory(slots.text),
+    brand,
+    resolutionMp: slots.megapixel,
+    requestedCount: Math.min(4, Math.max(1, Math.floor(slots.cameraCount ?? 1))),
+    search: buildSearchTerm(slots.text, brand),
+    wantsRecommendation: /معرفی|پیشنهاد|خوب|مناسب|چی\s*(?:بگیرم|بخرم)|چه\s*مدلی/.test(slots.text)
+  };
+}
+
 async function fetchCatalog(params: Record<string, string>): Promise<SourceCatalogPage | null> {
   try {
     const query = new URLSearchParams({ page: "1", limit: "24", inStock: "true", ...params });
-    const response = await fetch(`/api/catalog/source?${query}`, { cache: "no-store" });
+    const response = await fetch(`/api/assistant/catalog?${query}`, { cache: "no-store" });
     if (!response.ok) return null;
     return (await response.json()) as SourceCatalogPage;
   } catch {
@@ -65,58 +105,129 @@ async function fetchCatalog(params: Record<string, string>): Promise<SourceCatal
 
 const unavailable: Answer = {
   source: "catalog",
-  title: "دسترسی به کاتالوگ ممکن نشد",
+  title: "کاتالوگ محلی در دسترس نیست",
   lines: [
-    "برای مشاهده محصولات و قیمت‌ها باید وارد حساب کاربری خود شوید.",
+    "در حال حاضر نتوانستم اطلاعات محصول را از کاتالوگ محلی بخوانم؛ بنابراین مدل یا قیمت حدس نمی‌زنم.",
     "",
-    "در همین حال می‌توانم در محاسبات پروژه و مشخصات فنی کمکتان کنم."
-  ],
-  tool: { slug: "__login__", label: "ورود به حساب کاربری" }
+    "سرویس کاتالوگ و پایگاه داده را بررسی کنید یا کمی بعد دوباره بپرسید."
+  ]
 };
 
 function productLine(product: SourceCatalogProduct) {
   const stock = product.stockStatus === "out_of_stock" ? "ناموجود" : product.stockStatus === "low_stock" ? "موجودی محدود" : "موجود";
-  return `• **${product.name}** — ${formatToman(product.price)} — ${stock}${product.brand && product.brand !== "بدون برند" ? ` — ${product.brand}` : ""}`;
+  const commercial = product.source === "woocommerce" ? `${formatToman(product.price)} — ${stock}` : "داده نمایشی؛ قیمت و موجودی قابل استناد نیست";
+  return `• **${product.name}** — Part Number: **${product.sku}** — ${commercial}${product.brand && product.brand !== "بدون برند" ? ` — ${product.brand}` : ""}`;
+}
+
+const factLabels: Record<string, string> = {
+  resolution: "رزولوشن", resolutionMp: "رزولوشن (MP)", sensor: "سنسور", sensorFormat: "اندازه سنسور",
+  lens: "لنز", focalLength: "فاصله کانونی", irRange: "برد IR", irRangeM: "برد IR (متر)",
+  microphone: "میکروفن", audio: "صدا", poe: "PoE", ipRating: "درجه IP", ikRating: "درجه IK",
+  wdr: "WDR", maxFps: "حداکثر FPS", codecs: "کدک‌ها", aiFeatures: "قابلیت‌های AI",
+  localStorage: "حافظه محلی", localStorageGb: "حافظه محلی (GB)", maxPowerW: "حداکثر توان (W)"
+};
+
+function formatFactValue(value: string | number | boolean | string[]) {
+  if (Array.isArray(value)) return value.join("، ");
+  if (typeof value === "boolean") return value ? "دارد" : "ندارد";
+  return String(value);
+}
+
+function verifiedTechnicalDetails(product: SourceCatalogProduct) {
+  if (!product.datasheet) {
+    return [
+      "• **مشخصات فنی این Part Number هنوز با دیتاشیت سازنده در پایگاه محلی تأیید نشده است.**",
+      "• برای جلوگیری از اطلاعات اشتباه، لنز، IR، صدا، PoE، IP/IK، WDR، FPS، کدک و قابلیت AI را حدس نمی‌زنم."
+    ];
+  }
+  const facts = Object.entries(product.datasheet.facts).slice(0, 12).map(([key, value]) =>
+    `• ${factLabels[key] ?? key}: **${formatFactValue(value)}**`
+  );
+  return [
+    `• Part Number تأییدشده: **${product.datasheet.partNumber}**`,
+    ...facts,
+    `• منبع مشخصات: **${product.datasheet.sourceTitle}**`
+  ];
 }
 
 export async function productSearchSkill(slots: Slots): Promise<Answer> {
-  const category = detectCategory(slots.text);
-  const search = buildSearchTerm(slots.text);
-  const page = await fetchCatalog({ q: search, category: category ?? "all" });
+  const request = parseCatalogRequest(slots);
+  const page = await fetchCatalog({
+    q: request.search,
+    category: request.category ?? "all",
+    ...(request.brand ? { brand: request.brand } : {}),
+    ...(request.resolutionMp !== undefined ? { resolutionMp: String(request.resolutionMp) } : {})
+  });
   if (!page) return unavailable;
 
   if (!page.products.length) {
-    const broadened = search ? await fetchCatalog({ category: category ?? "all" }) : null;
-    if (broadened?.products.length) {
-      return {
-        source: "catalog",
-        title: "مورد دقیق پیدا نشد",
-        lines: [
-          `محصولی با عبارت «${search}» در کاتالوگ محلی نبود، اما این‌ها در همان دسته موجود هستند:`,
-          "",
-          ...broadened.products.slice(0, 6).map(productLine),
-          "",
-          `مجموع این دسته: **${formatFa(broadened.total)} محصول**`
-        ],
-        tool: { slug: "__catalog__", label: "مشاهده همه محصولات" }
-      };
-    }
     return {
       source: "catalog",
-      title: "محصولی پیدا نشد",
+      title: request.search ? "Part Number تأیید نشد" : "محصولی پیدا نشد",
       lines: [
-        "در کاتالوگ محلی محصولی مطابق این جست‌وجو ثبت نشده است.",
+        request.search
+          ? `مدل یا Part Number دقیق «${request.search}» در کاتالوگ محلی و رکوردهای دیتاشیت پیدا نشد؛ بنابراین هیچ ویژگی فنی برای آن اعلام نمی‌کنم.`
+          : "در کاتالوگ محلی محصولی مطابق این جست‌وجو ثبت نشده است.",
         "",
-        "می‌توانید نام مدل دقیق‌تر را بنویسید یا صفحه «محصولات» را برای دیدن فهرست کامل باز کنید."
+        "Part Number کامل را دقیقاً مطابق برچسب دستگاه یا دیتاشیت سازنده بنویسید، چون پسوندهای نزدیک ممکن است مشخصات متفاوتی داشته باشند."
       ],
       tool: { slug: "__catalog__", label: "مشاهده همه محصولات" }
     };
   }
 
   const shown = page.products.slice(0, 6);
+  if ((request.wantsRecommendation || (request.search && shown.length === 1)) && shown.length) {
+    const selectedProducts = shown.slice(0, request.requestedCount);
+    const allLive = selectedProducts.every((product) => product.source === "woocommerce");
+    const allDatasheets = selectedProducts.every((product) => Boolean(product.datasheet));
+    const requested = [
+      request.brand,
+      request.resolutionMp !== undefined ? `${formatFa(request.resolutionMp)} مگاپیکسل` : undefined
+    ].filter(Boolean).join("، ");
+    const productBlocks = selectedProducts.flatMap((product, index) => {
+      const liveListing = product.source === "woocommerce";
+      return [
+        selectedProducts.length > 1 ? `**گزینه ${formatFa(index + 1)} — ${product.name}**` : `• مدل ثبت‌شده: **${product.name}**`,
+        `• Part Number کاتالوگ: **${product.sku}**`,
+        ...verifiedTechnicalDetails(product),
+        liveListing
+          ? `• قیمت ثبت‌شده: **${formatToman(product.price)}**؛ وضعیت: **${product.stockStatus === "low_stock" ? "موجودی محدود" : "موجود"}**`
+          : "• قیمت و موجودی داده نمایشی عمداً به‌عنوان اطلاعات واقعی اعلام نمی‌شود.",
+        index < selectedProducts.length - 1 ? "---" : ""
+      ];
+    });
+    return {
+      source: "catalog",
+      title: selectedProducts.length > 1
+        ? `${formatFa(selectedProducts.length)} مدل ${allLive ? "مبتنی بر کاتالوگ" : "نیازمند تأیید"}`
+        : `${allLive ? "پیشنهاد مبتنی بر کاتالوگ" : "نمونه نیازمند تأیید"}: ${selectedProducts[0].name}`,
+      lines: [
+        allLive
+          ? `بر اساس آخرین همگام‌سازی فروشگاه، ${formatFa(selectedProducts.length)} مدل متمایز با درخواست **${requested || "شما"}** تطابق دارد:`
+          : `این ${formatFa(selectedProducts.length)} مدل در داده نمایشی توسعه با درخواست **${requested || "شما"}** تطابق دارند و هنوز پیشنهاد تجاری تأییدشده نیستند:`,
+        selectedProducts.length < request.requestedCount
+          ? `از ${formatFa(request.requestedCount)} مدل درخواستی، فقط ${formatFa(selectedProducts.length)} مدل منطبق پیدا شد.`
+          : "",
+        "",
+        ...productBlocks,
+        "",
+        "برای تأیید اینکه واقعاً بهترین انتخاب پروژه شماست، فاصله سوژه، فضای داخل/بیرون و نیاز به میکروفن را هم بگویید."
+      ].filter((line, index, lines) => line !== "" || lines[index - 1] !== ""),
+      assumptions: [
+        allLive
+          ? "نام، Part Number، قیمت و موجودی از آخرین همگام‌سازی WooCommerce خوانده شده‌اند"
+          : "نام و Part Number از داده نمایشی توسعه آمده‌اند؛ قیمت، موجودی و مشخصات آن قابل استناد نیست",
+        allDatasheets
+          ? "مشخصات فنی هر گزینه فقط از رکورد دیتاشیت تأییدشده همان Part Number آمده است"
+          : "مشخصات نرمال‌شده یا تخمینی فروشگاه به‌عنوان دیتاشیت معتبر نمایش داده نشده‌اند"
+      ],
+      tool: { slug: "__catalog__", label: "مشاهده کاتالوگ محصولات" }
+    };
+  }
+
   return {
     source: "catalog",
-    title: search ? `نتایج جست‌وجوی «${search}»` : `محصولات موجود${category ? ` — ${categoryLabel(category)}` : ""}`,
+    title: request.search ? `نتایج جست‌وجوی «${request.search}»` : `محصولات موجود${request.category ? ` — ${categoryLabel(request.category)}` : ""}`,
     lines: [
       ...shown.map(productLine),
       "",
@@ -128,12 +239,17 @@ export async function productSearchSkill(slots: Slots): Promise<Answer> {
 }
 
 export async function productPriceSkill(slots: Slots): Promise<Answer> {
-  const category = detectCategory(slots.text);
-  const search = buildSearchTerm(slots.text);
-  const page = await fetchCatalog({ q: search, category: category ?? "all", limit: "48" });
+  const request = parseCatalogRequest(slots);
+  const page = await fetchCatalog({
+    q: request.search,
+    category: request.category ?? "all",
+    limit: "48",
+    ...(request.brand ? { brand: request.brand } : {}),
+    ...(request.resolutionMp !== undefined ? { resolutionMp: String(request.resolutionMp) } : {})
+  });
   if (!page) return unavailable;
 
-  const priced = page.products.filter((product) => product.price > 0);
+  const priced = page.products.filter((product) => product.source === "woocommerce" && product.price > 0);
   if (!priced.length) {
     return {
       source: "catalog",
@@ -177,7 +293,7 @@ export async function productPriceSkill(slots: Slots): Promise<Answer> {
 
   return {
     source: "catalog",
-    title: search ? `قیمت «${search}»` : `قیمت‌ها${category ? ` — ${categoryLabel(category)}` : ""}`,
+    title: request.search ? `قیمت «${request.search}»` : `قیمت‌ها${request.category ? ` — ${categoryLabel(request.category)}` : ""}`,
     lines,
     assumptions: ["اعداد از آخرین همگام‌سازی کاتالوگ محلی ddcpersia است و ممکن است با قیمت لحظه‌ای فروشگاه تفاوت داشته باشد"],
     tool: { slug: "__catalog__", label: "مشاهده همه محصولات" }
@@ -185,12 +301,17 @@ export async function productPriceSkill(slots: Slots): Promise<Answer> {
 }
 
 export async function productCompareSkill(slots: Slots): Promise<Answer> {
-  const category = detectCategory(slots.text);
-  const search = buildSearchTerm(slots.text);
-  const page = await fetchCatalog({ q: search, category: category ?? "all", limit: "48" });
+  const request = parseCatalogRequest(slots);
+  const page = await fetchCatalog({
+    q: request.search,
+    category: request.category ?? "all",
+    limit: "48",
+    ...(request.brand ? { brand: request.brand } : {}),
+    ...(request.resolutionMp !== undefined ? { resolutionMp: String(request.resolutionMp) } : {})
+  });
   if (!page) return unavailable;
 
-  const candidates = page.products.filter((product) => product.price > 0).slice(0, 4);
+  const candidates = page.products.filter((product) => product.source === "woocommerce" && product.price > 0).slice(0, 4);
   if (candidates.length < 2) {
     return {
       source: "catalog",
@@ -209,10 +330,11 @@ export async function productCompareSkill(slots: Slots): Promise<Answer> {
     title: "مقایسه محصولات کاتالوگ",
     lines: [
       ...candidates.map((product) => {
-        const highlights = product.attributes
-          .slice(0, 3)
-          .map((attribute) => `${attribute.name}: ${attribute.options.join("، ")}`)
-          .join(" | ");
+        const highlights = product.datasheet
+          ? Object.entries(product.datasheet.facts).slice(0, 3)
+              .map(([key, value]) => `${factLabels[key] ?? key}: ${formatFactValue(value)}`)
+              .join(" | ")
+          : "مشخصات فنی بدون دیتاشیت تأییدشده نمایش داده نمی‌شود";
         return `• **${product.name}** — ${formatToman(product.price)}${highlights ? `\n  ${highlights}` : ""}`;
       }),
       "",
