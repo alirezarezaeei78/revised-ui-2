@@ -58,6 +58,57 @@ type Bundle = {
   frame: number;
 };
 
+function configureControlBindings(bundle: Bundle, tool: PlanTool) {
+  const { THREE, topControls, orbitControls } = bundle;
+  const drawing = tool !== "select";
+  topControls.enableZoom = true;
+  topControls.enablePan = true;
+  topControls.enableRotate = false;
+  topControls.mouseButtons = {
+    LEFT: drawing ? null : THREE.MOUSE.PAN,
+    MIDDLE: THREE.MOUSE.PAN,
+    RIGHT: THREE.MOUSE.PAN
+  };
+  orbitControls.enableZoom = true;
+  orbitControls.enablePan = true;
+  orbitControls.enableRotate = true;
+  orbitControls.mouseButtons = {
+    LEFT: drawing ? null : THREE.MOUSE.ROTATE,
+    MIDDLE: THREE.MOUSE.ROTATE,
+    RIGHT: THREE.MOUSE.PAN
+  };
+}
+
+function configureViewMode(
+  bundle: Bundle,
+  props: Pick<PlanCanvasProps, "viewMode" | "floor" | "buildingFloors">
+) {
+  const { topControls, orbitControls, topCamera, orbitCamera } = bundle;
+  if (props.viewMode === "top") {
+    topControls.target.set(orbitControls.target.x, 0, orbitControls.target.z);
+    topCamera.position.set(orbitControls.target.x, 100, orbitControls.target.z);
+    topControls.enabled = true;
+    orbitControls.enabled = false;
+    topControls.update();
+    return;
+  }
+
+  const floors = props.buildingFloors?.length ? props.buildingFloors : [props.floor];
+  const totalHeight = props.viewMode === "building"
+    ? Math.max(...floors.map((item) => item.elevationM + item.heightM), 3.2)
+    : 0;
+  orbitControls.target.set(topControls.target.x, totalHeight * 0.45, topControls.target.z);
+  const radius = props.viewMode === "building" ? Math.max(28, totalHeight * 3.2) : 24;
+  orbitCamera.position.set(
+    topControls.target.x + radius * 0.72,
+    totalHeight * 0.55 + radius * 0.62,
+    topControls.target.z + radius * 0.72
+  );
+  orbitControls.enabled = true;
+  topControls.enabled = false;
+  orbitControls.update();
+}
+
 export type PlanCanvasProps = {
   floor: FloorPlan;
   tool: PlanTool;
@@ -113,6 +164,7 @@ export function PlanCanvas(props: PlanCanvasProps) {
   /* ── Scene lifecycle (mount once) ────────────────────────────────── */
   useEffect(() => {
     let disposed = false;
+    let resizeObserver: ResizeObserver | null = null;
     const host = hostRef.current;
     if (!host) return;
 
@@ -243,6 +295,11 @@ export function PlanCanvas(props: PlanCanvasProps) {
         frame: 0
       };
       bundleRef.current = bundle;
+      // The async Three.js import can finish after the React view/tool effects have
+      // already run. Configure the newly-created controls here as well, otherwise a
+      // remount in orbit/building mode leaves OrbitControls disabled.
+      configureControlBindings(bundle, latest.current.tool);
+      configureViewMode(bundle, latest.current);
 
       const activeCamera = () => (latest.current.viewMode === "top" ? topCamera : orbitCamera);
 
@@ -269,8 +326,8 @@ export function PlanCanvas(props: PlanCanvasProps) {
         orbitCamera.aspect = ratio;
         orbitCamera.updateProjectionMatrix();
       };
-      const observer = new ResizeObserver(resize);
-      observer.observe(host);
+      resizeObserver = new ResizeObserver(resize);
+      resizeObserver.observe(host);
 
       syncScene(bundle, latest.current, coverages);
       if (latest.current.pendingBackdrop) {
@@ -282,6 +339,7 @@ export function PlanCanvas(props: PlanCanvasProps) {
 
     return () => {
       disposed = true;
+      resizeObserver?.disconnect();
       const bundle = bundleRef.current;
       if (!bundle) return;
       cancelAnimationFrame(bundle.frame);
@@ -319,44 +377,13 @@ export function PlanCanvas(props: PlanCanvasProps) {
   useEffect(() => {
     const bundle = bundleRef.current;
     if (!bundle) return;
-    const { topControls, orbitControls, topCamera, orbitCamera } = bundle;
-
-    if (viewMode === "top") {
-      // Carry the orbit target across so the plan does not jump on the way back.
-      topControls.target.set(orbitControls.target.x, 0, orbitControls.target.z);
-      topCamera.position.set(orbitControls.target.x, 100, orbitControls.target.z);
-      topControls.enabled = true;
-      orbitControls.enabled = false;
-    } else {
-      const totalHeight = viewMode === "building"
-        ? Math.max(...(latest.current.buildingFloors ?? [latest.current.floor]).map((item) => item.elevationM + item.heightM), 3.2)
-        : 0;
-      orbitControls.target.set(topControls.target.x, totalHeight * 0.45, topControls.target.z);
-      const radius = viewMode === "building" ? Math.max(28, totalHeight * 3.2) : 24;
-      orbitCamera.position.set(topControls.target.x + radius * 0.72, totalHeight * 0.55 + radius * 0.62, topControls.target.z + radius * 0.72);
-      orbitControls.enabled = true;
-      topControls.enabled = false;
-    }
+    configureViewMode(bundle, latest.current);
   }, [viewMode]);
 
   useEffect(() => {
     const bundle = bundleRef.current;
     if (!bundle) return;
-    const { THREE, topControls, orbitControls } = bundle;
-    // While a drawing tool is active the left button belongs to the tool, not the camera.
-    const drawing = tool !== "select";
-    topControls.mouseButtons = {
-      LEFT: drawing ? null : THREE.MOUSE.PAN,
-      MIDDLE: THREE.MOUSE.PAN,
-      RIGHT: THREE.MOUSE.PAN
-    };
-    orbitControls.mouseButtons = {
-      LEFT: drawing ? null : THREE.MOUSE.ROTATE,
-      // The wheel itself still zooms; holding it down and dragging always orbits,
-      // including while wall/door/camera tools own the primary mouse button.
-      MIDDLE: THREE.MOUSE.ROTATE,
-      RIGHT: THREE.MOUSE.PAN
-    };
+    configureControlBindings(bundle, tool);
   }, [tool]);
 
   /* ── Pointer helpers ─────────────────────────────────────────────── */
@@ -760,6 +787,10 @@ export function PlanCanvas(props: PlanCanvasProps) {
         onPointerLeave={endDrag}
         onAuxClick={(event) => { if (event.button === 1) event.preventDefault(); }}
         onContextMenu={(event) => {
+          if (latest.current.viewMode !== "top") {
+            event.preventDefault();
+            return;
+          }
           if (latest.current.pendingBackdrop) {
             event.preventDefault();
             latest.current.onCancelBackdropPlacement?.();
