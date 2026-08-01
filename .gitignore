@@ -14,6 +14,7 @@ pnpm-debug.log*
 .next-dev*.log
 tsconfig.tsbuildinfo
 public/catalog-cache/
+.data/
 
 # Android / Gradle local output
 android/.gradle/

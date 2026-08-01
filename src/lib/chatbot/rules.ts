@@ -88,7 +88,12 @@ const rules: Rule[] = [
     reason: "حجم آرشیو",
     test: (text, slots) =>
       /هارد|ترابایت|ذخیره ?سازی|آرشیو|بایگانی|نگهداری تصویر/.test(text) &&
-      (slots.days !== undefined || slots.terabytes !== undefined || /چند روز|چقدر فضا|چند ترابایت/.test(text))
+      (
+        slots.days !== undefined ||
+        slots.terabytes !== undefined ||
+        (slots.cameraCount !== undefined && /هارد|آرشیو|ذخیره ?سازی/.test(text)) ||
+        /چند روز|چقدر فضا|چند ترابایت/.test(text)
+      )
   },
   {
     intent: "calc_channels",
@@ -96,9 +101,75 @@ const rules: Rule[] = [
     test: (text) => /چند کانال|چند کاناله|کانال بگیرم|تعداد کانال/.test(text)
   },
   {
+    intent: "product_compare",
+    reason: "مقایسه صریح مدل یا برند محصول",
+    test: (text) =>
+      /مقایسه|کدام بهتر|کدوم بهتر|فرق.*مدل|بهتره یا/.test(text) &&
+      /دوربین|nvr|dvr|سوئیچ|سوییچ|هارد|ups|تیاندی|هایک|داهوا|اپتینت|tiandy|hikvision|dahua|optinet|tc-|ds-/.test(text)
+  },
+  {
+    intent: "product_price",
+    reason: "استعلام قیمت یک محصول مشخص",
+    test: (text) =>
+      /قیمت|چند تومن|چند تومان|چنده|هزینه خرید/.test(text) &&
+      /دوربین|nvr|dvr|سوئیچ|سوییچ|هارد|ups|تیاندی|هایک|داهوا|اپتینت|tiandy|hikvision|dahua|optinet|tc-|ds-/.test(text)
+  },
+  {
+    intent: "product_search",
+    reason: "درخواست معرفی یا جست‌وجوی محصول با مشخصات",
+    test: (text) =>
+      /معرفی|پیشنهاد|موجود|لیست|نشان|نشون|چه مدلی|مدل.*خوب|مدل.*مناسب|چی بخرم|چی بگیرم/.test(text) &&
+      /دوربین|nvr|dvr|سوئیچ|سوییچ|هارد|ups|تیاندی|هایک|داهوا|اپتینت|tiandy|hikvision|dahua|optinet|tc-|ds-/.test(text)
+  },
+  {
     intent: "info_codec",
     reason: "نام کدک",
     test: (text) => /h ?\.?26[45]|hevc|\bavc\b|کدک|فشرده ?سازی/.test(text)
+  },
+  {
+    intent: "info_incident_response",
+    reason: "نشانه رخداد یا نفوذ به سامانه نظارتی",
+    test: (text) => /هک شده|نفوذ شده|ورود مشکوک|لاگین مشکوک|ip ناشناس|ای ?پی ناشناس|تنظیمات.*عوض شده|ترافیک مشکوک|رمز.*لو رفته/.test(text)
+  },
+  {
+    intent: "info_device_hardening",
+    reason: "امن‌سازی تجهیزات نظارتی",
+    test: (text) => /امن ?سازی|هاردنینگ|hardening|رمز پیش ?فرض|فریم ?ور|firmware|upnp|telnet|جلوگیری از هک/.test(text)
+  },
+  {
+    intent: "info_vlan",
+    reason: "تفکیک شبکه با VLAN",
+    test: (text) => /\bvlan\b|وی ?لن|تفکیک شبکه|segment|شبکه جدا/.test(text) && /دوربین|nvr|شبکه|کاربر|مدیریت/.test(text)
+  },
+  {
+    intent: "info_firewall",
+    reason: "سیاست فایروال و کنترل پورت",
+    test: (text) => /فایروال|firewall|\bacl\b|default deny|پورت.*(?:باز|ببند|محدود)/.test(text)
+  },
+  {
+    intent: "info_remote_access",
+    reason: "دسترسی امن از راه دور",
+    test: (text) => /\bvpn\b|دسترسی از راه دور|remote access|port forwarding|پورت فوروارد|فوروارد پورت|\bp2p\b/.test(text)
+  },
+  {
+    intent: "info_wifi_security",
+    reason: "امنیت شبکه بی‌سیم",
+    test: (text) => /\bwpa[23]?\b|\bwps\b|امنیت.*(?:wifi|وای ?فای)|رمز.*وای ?فای|ssid/.test(text)
+  },
+  {
+    intent: "info_access_control",
+    reason: "کنترل تردد و دسترسی فیزیکی",
+    test: (text) => /اکسس کنترل|کنترل تردد|کارتخوان|اثر انگشت|قفل برقی|fail ?safe|fail ?secure|anti ?passback/.test(text)
+  },
+  {
+    intent: "info_alarm_security",
+    reason: "دزدگیر و اعلام سرقت",
+    test: (text) => /دزدگیر|اعلام سرقت|سنسور.*(?:حرکت|pir)|\bpir\b|مگنت.*(?:در|پنجره)|آژیر|زون دزدگیر|تمپر|tamper/.test(text)
+  },
+  {
+    intent: "info_network_design",
+    reason: "طراحی معماری شبکه نظارتی",
+    test: (text) => /طراحی شبکه|توپولوژی|سوییچ مرکزی|سوئیچ مرکزی|core switch|uplink|آپ ?لینک|رینگ شبکه|\brstp\b|\bqos\b/.test(text)
   },
   {
     intent: "info_poe_standard",
@@ -164,4 +235,22 @@ const offTopicPatterns = [
 
 export function isExplicitlyOffTopic(text: string): boolean {
   return offTopicPatterns.some((pattern) => pattern.test(text));
+}
+
+/**
+ * High-precision safety boundary for requests that would enable unauthorised access,
+ * credential theft or deliberate disruption. Defensive questions such as "دوربینم
+ * هک شده" are intentionally excluded and route to incident response instead.
+ */
+const unsafeSecurityPatterns = [
+  /(?:چطور|چگونه|روش|راه).*(?:هک|نفوذ).*(?:دوربین|nvr|dvr|شبکه|وای ?فای|wifi|دزدگیر|اکسس کنترل).*(?:کسی|همسایه|بدون اجازه|ناشناس)/,
+  /(?:رمز|پسورد|گذرواژه).*(?:بشکن|کرک|حدس بزن|دور بزن|بای ?پس)/,
+  /(?:بشکن|کرک|دور بزن|بای ?پس).*(?:رمز|پسورد|گذرواژه|احراز هویت)/,
+  /(?:کور|مختل|از کار خارج|غیر ?فعال).*(?:دوربین|دزدگیر|اعلام سرقت|کنترل تردد).*(?:بدون اجازه|مخفیانه|کسی)/,
+  /(?:پاک|حذف).*(?:لاگ|ردپا|سابقه).*(?:نفوذ|هک|ورود)/,
+  /(?:جمینگ|jammer|پارازیت).*(?:دوربین|دزدگیر|سیستم امنیتی)/
+];
+
+export function isUnsafeSecurityRequest(text: string): boolean {
+  return unsafeSecurityPatterns.some((pattern) => pattern.test(text));
 }

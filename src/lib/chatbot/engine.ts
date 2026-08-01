@@ -1,6 +1,6 @@
 import type { ChatIntent } from "@/src/lib/chatbot/corpus";
 import { checkDomain } from "@/src/lib/chatbot/domain";
-import { isExplicitlyOffTopic, matchRule, type RuleMatch } from "@/src/lib/chatbot/rules";
+import { isExplicitlyOffTopic, isUnsafeSecurityRequest, matchRule, type RuleMatch } from "@/src/lib/chatbot/rules";
 import { knowledgeByIntent, type KnowledgeArticle } from "@/src/lib/chatbot/knowledge";
 import { AssistantModel } from "@/src/lib/chatbot/model";
 import { formatFa } from "@/src/lib/chatbot/persian";
@@ -45,6 +45,13 @@ export type ChatReply = {
     articles: { title: string; score: number }[];
     modelReady: boolean;
     slots: string[];
+    runtime?: {
+      kind: "local-llm" | "local-nlp";
+      model?: string;
+      thinking?: boolean;
+      mode?: "low" | "medium" | "high";
+      verified?: boolean;
+    };
   };
 };
 
@@ -85,6 +92,10 @@ export async function respond(message: string): Promise<ChatReply> {
   const classification = model.classify(text);
   const hits = searchKnowledge(text, 3);
   const rule = matchRule(slots.text, slots);
+
+  if (isUnsafeSecurityRequest(slots.text)) {
+    return reply(securityBoundaryAnswer(), "fallback", 1, classification, [], slots);
+  }
 
   // Nothing in the message belongs to this subject matter: say so rather than
   // letting a confident softmax pick the least-wrong CCTV article. A named off-topic
@@ -371,6 +382,9 @@ function smallTalk(intent: "greeting" | "thanks" | "help_menu" | "contact"): Ans
       "**مشخصات و دانش فنی**",
       "رزولوشن و سنسور، کدک‌ها، درجه IP و IK، دید در شب، WDR، PTZ، انواع دوربین، تفاوت NVR و DVR، استانداردهای PoE، ONVIF، قابلیت‌های هوش مصنوعی، انواع لنز، اصول نصب، عیب‌یابی و استانداردهای مرجع.",
       "",
+      "**شبکه و امنیت دفاعی**",
+      "طراحی شبکه، VLAN، فایروال، VPN و دسترسی از راه دور، امن‌سازی دوربین و NVR، امنیت Wi‑Fi، پاسخ به نفوذ، کنترل تردد و دزدگیر.",
+      "",
       "**محصولات و قیمت**",
       "جست‌وجو در کاتالوگ محلی، بازه قیمت هر دسته و مقایسه محصولات.",
       "",
@@ -404,10 +418,23 @@ function offTopicAnswer(): Answer {
     source: "system",
     title: "این موضوع خارج از تخصص من است",
     lines: [
-      "من فقط درباره دوربین مداربسته، شبکه نظارتی و محاسبات مرتبط با آن پاسخ می‌دهم.",
+      "من درباره دوربین مداربسته، شبکه، امنیت سایبری دفاعی، کنترل تردد، دزدگیر و محاسبات مرتبط پاسخ می‌دهم.",
       "",
       "برای دیدن فهرست کامل توانایی‌ها بنویسید: «چه کارهایی می‌توانی انجام بدهی؟»"
     ]
+  };
+}
+
+function securityBoundaryAnswer(): Answer {
+  return {
+    source: "system",
+    title: "در امنیت دفاعی کمکتان می‌کنم",
+    lines: [
+      "نمی‌توانم برای نفوذ بدون مجوز، شکستن رمز، دورزدن کنترل دسترسی، پاک‌کردن ردپا یا مختل‌کردن سامانه حفاظتی راهنمای عملیاتی بدهم.",
+      "",
+      "اگر تجهیز متعلق به خودتان است، می‌توانم برای بازیابی رسمی دسترسی، جداسازی دستگاه مشکوک، بررسی Log، امن‌سازی شبکه یا طراحی آزمون مجاز مرحله‌به‌مرحله کمک کنم."
+    ],
+    followUps: ["فکر کنم دوربین خودم هک شده؛ چه کنم؟", "چک‌لیست امن‌سازی NVR را بگو"]
   };
 }
 

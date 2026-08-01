@@ -1,6 +1,7 @@
 import type { CatalogProduct, SourceCatalogPage, SourceCatalogProduct, StockStatus } from "@/src/domain/catalog/types";
 import { query } from "@/src/lib/db";
 import { getCatalogSnapshot } from "@/src/lib/catalog/repository";
+import { getVerifiedDatasheets, partNumberKey } from "@/src/lib/catalog/datasheet-repository";
 
 type SourceCatalogFilters = {
   page?: number;
@@ -27,6 +28,7 @@ function fallbackProduct(product: CatalogProduct): SourceCatalogProduct {
     id: product.id, wooId: product.wooId, sku: product.sku, name: product.name, brand: product.brand,
     category: product.category, wooCategories: [], price: product.price, stockStatus: product.stockStatus,
     stockQuantity: product.stockQuantity, sourceUrl: product.sourceUrl,
+    source: product.source,
     images: (product.images || []).map((image) => ({ url: image.url, originalUrl: image.url, alt: image.alt, cached: false })),
     attributes: [], specs: product.specs,
     normalizationStatus: product.dataQuality?.status === "verified" ? "verified" : "estimated",
@@ -85,15 +87,21 @@ export async function getSourceCatalogPage(filters: SourceCatalogFilters = {}): 
       brand: row.brand, category: row.category, wooCategories: row.woo_categories || [],
       price: row.normalized_price === null ? Math.round(Number(row.price || 0) / divisor) : Number(row.normalized_price),
       stockStatus: stockStatus(row.stock_status), stockQuantity: Number(row.stock_quantity || 0), sourceUrl: row.permalink,
+      source: "woocommerce",
       sourceModifiedAt: row.source_modified_at ? new Date(row.source_modified_at).toISOString() : undefined,
       images: row.images || [], attributes: row.attributes || [], specs: row.normalized_specs || undefined,
       normalizationStatus: row.normalization_status || "unmapped", normalizationWarnings: row.normalization_warnings || []
+    }));
+    const datasheets = await getVerifiedDatasheets(products.map((product) => product.sku));
+    const groundedProducts = products.map((product) => ({
+      ...product,
+      datasheet: datasheets.get(partNumberKey(product.sku))
     }));
     const total = Number(countResult.rows[0]?.total || 0);
     const imageCache = { queued: 0, downloading: 0, completed: 0, failed: 0 };
     for (const row of cacheRows.rows) if (row.status in imageCache) imageCache[row.status as keyof typeof imageCache] = Number(row.count);
     return {
-      products, page, limit, total, totalPages: Math.ceil(total / limit),
+      products: groundedProducts, page, limit, total, totalPages: Math.ceil(total / limit),
       facets: { brands: brandRows.rows.map((row) => String(row.brand)), categoryCounts: Object.fromEntries(categoryRows.rows.map((row) => [row.category, Number(row.count)])) },
       imageCache
     };

@@ -178,7 +178,10 @@ export function normalizeWooProduct(product: WooProduct): { product?: CatalogPro
       category, price, stockStatus: product.stock_status === "outofstock" ? "out_of_stock" : product.stock_status === "onbackorder" ? "low_stock" : "in_stock",
       stockQuantity: product.stock_quantity ?? (product.stock_status === "instock" ? 1 : 0), warrantyMonths: 0,
       sourceUrl: product.permalink, source: "woocommerce", images: productImages(product).map((image) => ({ url: image.src, alt: image.alt || product.name, source: "ddcpersia" as const })), specs,
-      dataQuality: { status: warnings.length ? "estimated" : "verified", warnings }
+      dataQuality: {
+        status: "estimated",
+        warnings: [...warnings, "مشخصات نرمال‌شده تا زمان تطبیق با دیتاشیت سازنده تأییدشده محسوب نمی‌شوند."]
+      }
     }
   };
 }

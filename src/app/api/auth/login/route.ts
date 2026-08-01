@@ -54,7 +54,18 @@ export async function POST(request: Request) {
     return failedLoginResponse(request, isFormPost, "نام کاربری و رمز عبور الزامی است.", 400);
   }
 
-  const result = await verifyPassword(username, password);
+  let result: Awaited<ReturnType<typeof verifyPassword>>;
+  try {
+    result = await verifyPassword(username, password);
+  } catch (error) {
+    console.error("Password login failed before credentials could be verified", error);
+    return failedLoginResponse(
+      request,
+      isFormPost,
+      "سرویس ورود به پایگاه داده متصل نیست. تنظیمات DATABASE_URL را بررسی کنید.",
+      503
+    );
+  }
   if (!result.ok) {
     return failedLoginResponse(request, isFormPost, result.error, 401);
   }
