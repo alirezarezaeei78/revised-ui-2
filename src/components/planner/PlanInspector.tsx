@@ -1,12 +1,13 @@
 "use client";
 
 import { BrickWall, Camera, Compass, Cuboid, DoorOpen, Ruler, Trash2 } from "lucide-react";
-import type { FloorPlan, PlanDefaults, PlanSelection, PlanTool } from "@/src/domain/planner/types";
+import type { FloorPlan, PlanDefaults, PlanObstacle, PlanSelection, PlanTool, WallDrawMode } from "@/src/domain/planner/types";
 import type { CameraHousing, SurveillanceTask } from "@/src/domain/catalog/types";
 import { cameraFovDeg, computeCameraCoverage, focalForTask } from "@/src/lib/planner/coverage";
 import { collectOccluders } from "@/src/lib/planner/geometry";
 import { sensorOptions } from "@/src/lib/chatbot/slots";
 import { formatFa } from "@/src/lib/chatbot/persian";
+import { applyObstaclePreset, obstaclePreset, obstaclePresets } from "@/src/lib/planner/obstacle-presets";
 
 /**
  * Property editor for whatever is selected.
@@ -49,6 +50,7 @@ export function PlanInspector({
   floor,
   selection,
   activeTool,
+  wallDrawMode,
   defaults,
   onDefaultsChange,
   onFloorChange,
@@ -57,6 +59,7 @@ export function PlanInspector({
   floor: FloorPlan;
   selection: PlanSelection;
   activeTool: PlanTool;
+  wallDrawMode: WallDrawMode;
   defaults: PlanDefaults;
   onDefaultsChange: (patch: Partial<PlanDefaults>) => void;
   onFloorChange: (floor: FloorPlan) => void;
@@ -67,10 +70,14 @@ export function PlanInspector({
       return (
         <aside className="plan-inspector plan-tool-inspector">
           <header><BrickWall size={18} aria-hidden="true" /><strong>مشخصات دیوار در حال رسم</strong></header>
-          <p>این مقادیر روی قطعه‌های جدید اعمال می‌شوند و بعداً هر دیوار جداگانه قابل ویرایش است.</p>
+          <p>{wallDrawMode === "line"
+            ? "با انتخاب دو نقطه، یک دیوار خطی ساخته می‌شود."
+            : "با انتخاب دو گوشه، چهار ضلع یک فضای مستطیلی ساخته می‌شود."} این مقادیر روی دیوارهای جدید اعمال خواهند شد.</p>
           <NumberField label="ارتفاع دیوار" unit="متر" value={defaults.wallHeightM} min={0.3} max={12} step={0.1} onChange={(wallHeightM) => onDefaultsChange({ wallHeightM })} />
           <NumberField label="ضخامت دیوار" unit="متر" value={defaults.wallThicknessM} min={0.05} max={1} step={0.05} onChange={(wallThicknessM) => onDefaultsChange({ wallThicknessM })} />
-          <div className="plan-tool-tip"><Ruler size={15} aria-hidden="true" /><span>برای پایان زنجیره دیوار، کلیک راست یا Esc را بزنید.</span></div>
+          <div className="plan-tool-tip"><Ruler size={15} aria-hidden="true" /><span>{wallDrawMode === "line"
+            ? "نقطه شروع را کلیک کنید؛ طول دیوار با حرکت ماوس نمایش داده می‌شود و کلیک دوم آن را می‌سازد."
+            : "گوشه اول را کلیک کنید؛ با حرکت ماوس طول و عرض زنده نمایش داده می‌شود و کلیک دوم مستطیل را می‌سازد."}</span></div>
         </aside>
       );
     }
@@ -79,7 +86,7 @@ export function PlanInspector({
       return (
         <aside className="plan-inspector plan-tool-inspector">
           <header><Cuboid size={18} aria-hidden="true" /><strong>مشخصات مانع جدید</strong></header>
-          <p>طول و عرض با دو کلیک روی نقشه تعیین می‌شوند.</p>
+          <p>این ابزار فقط برای رسم مانع سفارشی است. ماشین، درخت و پله هرکدام ابزار جداگانه بالای نقشه دارند.</p>
           <NumberField label="ارتفاع پیش‌فرض" unit="متر" value={defaults.obstacleHeightM} min={0.1} max={12} step={0.1} onChange={(obstacleHeightM) => onDefaultsChange({ obstacleHeightM })} />
           <div className="plan-tool-tip"><span>نقطه اول و سپس گوشه مقابل مانع را انتخاب کنید.</span></div>
         </aside>
@@ -243,6 +250,28 @@ export function PlanInspector({
     return (
       <aside className="plan-inspector">
         <header><Ruler size={17} aria-hidden="true" /><strong>مانع</strong></header>
+        <label className="plan-text-field">
+          <span>نوع مانع</span>
+          <select
+            value={obstacle.variant ?? "custom"}
+            onChange={(event) => {
+              const preset = obstaclePreset(event.target.value as PlanObstacle["variant"]);
+              if (preset) update(applyObstaclePreset(obstacle, preset));
+              else update({ kind: "block", variant: undefined });
+            }}
+          >
+            <option value="custom">مانع سفارشی</option>
+            <optgroup label="خودروها">
+              {obstaclePresets.filter((item) => item.group === "vehicle").map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+            </optgroup>
+            <optgroup label="درخت‌ها">
+              {obstaclePresets.filter((item) => item.group === "tree").map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+            </optgroup>
+            <optgroup label="سازه‌ها">
+              {obstaclePresets.filter((item) => item.group === "structure").map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+            </optgroup>
+          </select>
+        </label>
         <label className="plan-text-field">
           <span>نام</span>
           <input value={obstacle.label} onChange={(event) => update({ label: event.target.value })} />

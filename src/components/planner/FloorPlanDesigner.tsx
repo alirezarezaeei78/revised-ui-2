@@ -3,7 +3,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   BrickWall,
+  Building2,
+  CarFront,
+  ChartNoAxesGantt,
   Check,
+  ChevronDown,
   Copy,
   Cuboid,
   Camera as CameraIcon,
@@ -16,12 +20,14 @@ import {
   Move3d,
   Plus,
   Ruler,
+  Square,
   Redo2,
   RotateCcw,
   Settings2,
   Sparkles,
   TriangleAlert,
   Trash2,
+  TreePine,
   Undo2,
   Minus
 } from "lucide-react";
@@ -37,6 +43,7 @@ import {
   type PlanSelection,
   type PlanTool,
   type PlanViewMode,
+  type WallDrawMode,
   type Vec2
 } from "@/src/domain/planner/types";
 import { PlanCanvas } from "@/src/components/planner/PlanCanvas";
@@ -48,6 +55,7 @@ import {
   type SmartPlacementReport
 } from "@/src/lib/planner/smart-placement";
 import { formatFa } from "@/src/lib/chatbot/persian";
+import { obstaclePresets, type ObstaclePreset } from "@/src/lib/planner/obstacle-presets";
 
 const cameraHousingLabel: Record<PlanCameraDefinition["housing"], string> = {
   bullet: "بولت",
@@ -76,7 +84,7 @@ export type DesignerMode = "environment" | "cameras";
 
 const allTools: { id: PlanTool; label: string; icon: typeof MousePointer2; hint: string; modes: DesignerMode[] }[] = [
   { id: "select", label: "انتخاب", icon: MousePointer2, hint: "انتخاب و جابه‌جایی عناصر — دستگیره نارنجی جهت دوربین را می‌چرخاند", modes: ["environment", "cameras"] },
-  { id: "wall", label: "دیوار", icon: BrickWall, hint: "کلیک کنید تا زنجیره دیوار بکشید؛ کلیک راست یا Esc پایان", modes: ["environment"] },
+  { id: "wall", label: "دیوار", icon: BrickWall, hint: "گوشه اول و سپس گوشه مقابل را بزنید تا چهار دیوار مستطیلی رسم شود", modes: ["environment"] },
   { id: "door", label: "در", icon: DoorOpen, hint: "روی یک دیوار کلیک کنید تا در به همان نقطه متصل شود", modes: ["environment"] },
   { id: "obstacle", label: "مانع", icon: Cuboid, hint: "دو نقطه مقابل هم را بزنید", modes: ["environment"] },
   { id: "camera", label: "افزودن دوربین", icon: CameraIcon, hint: "روی نقشه کلیک کنید تا دوربین اضافه شود", modes: ["cameras"] },
@@ -104,12 +112,14 @@ export function FloorPlanDesigner({
   );
 
   const [requestedTool, setTool] = useState<PlanTool>("select");
+  const [wallDrawMode, setWallDrawMode] = useState<WallDrawMode>("rectangle");
   /* Derived, not stored: switching mode retires tools like "دیوار", and falling back
      here avoids an effect that would setState during render. */
   const tool: PlanTool = tools.some((item) => item.id === requestedTool)
     ? requestedTool
     : "select";
   const [viewMode, setViewMode] = useState<PlanViewMode>("top");
+  const [previewFocusFloorId, setPreviewFocusFloorId] = useState<string | null>(null);
   const [selection, setSelection] = useState<PlanSelection>(null);
   const [showCoverage, setShowCoverage] = useState(true);
   const [hint, setHint] = useState<string | null>(null);
@@ -123,6 +133,8 @@ export function FloorPlanDesigner({
   const [historyState, setHistoryState] = useState({ past: 0, future: 0 });
 
   const activeFloor = plan.floors.find((floor) => floor.id === plan.activeFloorId) ?? plan.floors[0];
+  const activeFloorIndex = plan.floors.findIndex((floor) => floor.id === activeFloor?.id);
+  const referenceFloor = activeFloorIndex > 0 ? plan.floors[activeFloorIndex - 1] : null;
   const designDefaults = { ...defaultPlanDefaults, ...plan.defaults };
   const placedDefinitionIds = useMemo(
     () => new Set(plan.floors.flatMap((floor) =>
@@ -200,6 +212,34 @@ export function FloorPlanDesigner({
     commit({ ...plan, floors: plan.floors.map((item) => (item.id === floor.id ? floor : item)) });
   }, [commit, plan]);
 
+  const addPresetObstacle = useCallback((preset: ObstaclePreset) => {
+    const planPoints = activeFloor.walls.flatMap((wall) => [wall.a, wall.b]);
+    const center = planPoints.length > 0
+      ? {
+          x: (Math.min(...planPoints.map((point) => point.x)) + Math.max(...planPoints.map((point) => point.x))) / 2,
+          z: (Math.min(...planPoints.map((point) => point.z)) + Math.max(...planPoints.map((point) => point.z))) / 2
+        }
+      : { x: 0, z: 0 };
+    const stagger = (activeFloor.obstacles.length % 5) * 0.5;
+    const obstacle = {
+      id: `obs-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e4).toString(36)}`,
+      label: preset.label,
+      kind: preset.kind,
+      variant: preset.id,
+      center: { x: center.x + stagger, z: center.z + stagger },
+      widthM: preset.widthM,
+      depthM: preset.depthM,
+      heightM: preset.heightM,
+      rotationDeg: 0,
+      blocksView: true
+    };
+    updateFloor({ ...activeFloor, obstacles: [...activeFloor.obstacles, obstacle] });
+    setTool("select");
+    setSelection({ kind: "obstacle", id: obstacle.id });
+    setViewMode("top");
+    setHint(`${preset.label} به مرکز نقشه اضافه شد؛ آن را به محل دلخواه بکشید.`);
+  }, [activeFloor, updateFloor]);
+
   const placeDefinedCamera = useCallback((definitionId: string, position: Vec2) => {
     const definition = cameraDefinitions.find((item) => item.id === definitionId);
     if (!definition) {
@@ -268,15 +308,26 @@ export function FloorPlanDesigner({
     const name = `طبقه ${index + 1}`;
     const source = plan.floors[plan.floors.length - 1];
     const floor = copyPrevious && source ? duplicateFloor(source, name, index) : createFloor(name, index);
+    floor.elevationM = source ? source.elevationM + source.heightM : 0;
     commit({ ...plan, floors: [...plan.floors, floor], activeFloorId: floor.id });
     setSelection(null);
+    setPreviewFocusFloorId(null);
+    setViewMode("top");
+    setTool("select");
+    setHint(source ? `خط قرمز محدوده «${source.name}» را نشان می‌دهد؛ طراحی طبقه جدید را داخل آن انجام دهید.` : null);
   };
 
   const removeFloor = (id: string) => {
     if (plan.floors.length <= 1) return;
-    const remaining = plan.floors.filter((floor) => floor.id !== id);
+    let nextElevationM = 0;
+    const remaining = plan.floors.filter((floor) => floor.id !== id).map((floor) => {
+      const normalized = { ...floor, elevationM: nextElevationM };
+      nextElevationM += floor.heightM;
+      return normalized;
+    });
     commit({ ...plan, floors: remaining, activeFloorId: remaining[0].id });
     setSelection(null);
+    setPreviewFocusFloorId(viewMode === "building" ? remaining[0].id : null);
   };
 
   /** Reads the drawing at native size, then hands it to the pointer-based placement flow. */
@@ -364,7 +415,11 @@ export function FloorPlanDesigner({
               key={floor.id}
               type="button"
               className={floor.id === plan.activeFloorId ? "active" : ""}
-              onClick={() => { publishPlan({ ...plan, activeFloorId: floor.id }); setSelection(null); }}
+              onClick={() => {
+                publishPlan({ ...plan, activeFloorId: floor.id });
+                if (viewMode === "building") setPreviewFocusFloorId(floor.id);
+                setSelection(null);
+              }}
             >
               {floor.name}
               <small>{formatFa(floor.cameras.length)} دوربین</small>
@@ -392,6 +447,23 @@ export function FloorPlanDesigner({
           <div className="plan-tool-group">
             {tools.map((item) => {
               const Icon = item.icon;
+              if (item.id === "wall") {
+                return (
+                  <WallToolMenu
+                    key={item.id}
+                    active={tool === "wall"}
+                    mode={wallDrawMode}
+                    onSelect={(nextMode) => {
+                      setWallDrawMode(nextMode);
+                      setTool("wall");
+                      setSelection(null);
+                      setHint(nextMode === "line"
+                        ? "گوشه اول و دوم را انتخاب کنید تا یک دیوار خطی رسم شود"
+                        : "گوشه اول و مقابل را انتخاب کنید تا چهار دیوار مستطیلی رسم شود");
+                    }}
+                  />
+                );
+              }
               return (
                 <button
                   key={item.id}
@@ -409,7 +481,18 @@ export function FloorPlanDesigner({
           <span className="plan-ribbon-label">ترسیم و جانمایی</span>
         </section>
 
-        <section className="plan-ribbon-section" aria-label="نمایش">
+        {mode === "environment" ? (
+          <section className="plan-ribbon-section plan-ribbon-objects" aria-label="عناصر محیطی">
+            <div className="plan-tool-group">
+              <ObstacleToolMenu group="vehicle" label="ماشین" icon={CarFront} onPick={addPresetObstacle} />
+              <ObstacleToolMenu group="tree" label="درخت" icon={TreePine} onPick={addPresetObstacle} />
+              <ObstacleToolMenu group="structure" label="پله" icon={ChartNoAxesGantt} onPick={addPresetObstacle} />
+            </div>
+            <span className="plan-ribbon-label">عناصر محیطی</span>
+          </section>
+        ) : null}
+
+        <section className="plan-ribbon-section plan-ribbon-view" aria-label="نمایش">
           <div className="plan-tool-group">
           <button type="button" className={viewMode === "top" ? "active" : ""} onClick={() => setViewMode("top")}>
             <Grid3x3 size={16} aria-hidden="true" /><span>نمای نقشه</span>
@@ -422,6 +505,20 @@ export function FloorPlanDesigner({
           >
             <Move3d size={16} aria-hidden="true" /><span>نمای سه‌بعدی</span>
           </button>
+          <button
+            type="button"
+            className={viewMode === "building" ? "active" : ""}
+            onClick={() => {
+              setViewMode("building");
+              setPreviewFocusFloorId(plan.activeFloorId);
+              setTool("select");
+              setSelection(null);
+              setHint("پیش‌نمایش کلی ساختمان؛ یک طبقه را از پنل کناری انتخاب کنید");
+            }}
+            title="چیدمان همه طبقات روی یکدیگر"
+          >
+            <Building2 size={16} aria-hidden="true" /><span>پیش‌نمایش ساختمان</span>
+          </button>
           <button type="button" className={showCoverage ? "active" : ""} onClick={() => setShowCoverage((value) => !value)}>
             <Eye size={16} aria-hidden="true" /><span>پوشش DORI</span>
           </button>
@@ -429,7 +526,7 @@ export function FloorPlanDesigner({
           <span className="plan-ribbon-label">نمایش</span>
         </section>
 
-        <section className="plan-ribbon-section" aria-label="تنظیم نقشه">
+        <section className="plan-ribbon-section plan-ribbon-settings" aria-label="تنظیم نقشه">
           <div className="plan-tool-group">
             <label className="plan-snap-field">
               <span>اسنپ</span>
@@ -585,12 +682,18 @@ export function FloorPlanDesigner({
           </div>
         ) : null}
         <PlanCanvas
+          key={viewMode === "building" ? "building-preview" : activeFloor.id}
           floor={activeFloor}
           tool={tool}
+          wallDrawMode={wallDrawMode}
           viewMode={viewMode}
           selection={selection}
           snapM={plan.snapM}
           defaults={designDefaults}
+          readOnly={viewMode === "building"}
+          buildingFloors={viewMode === "building" ? plan.floors : undefined}
+          focusedFloorId={viewMode === "building" ? previewFocusFloorId : null}
+          referenceFloor={viewMode !== "building" && mode === "environment" ? referenceFloor : null}
           pendingBackdrop={pendingBackdrop}
           showCoverage={showCoverage}
           onSelect={setSelection}
@@ -604,7 +707,23 @@ export function FloorPlanDesigner({
           }}
         />
         <div className="plan-workspace-sidebar">
-          {backdropControls ? (
+          {viewMode === "building" ? (
+            <BuildingPreviewPanel
+              floors={plan.floors}
+              focusedFloorId={previewFocusFloorId}
+              onFocus={(floorId) => {
+                setPreviewFocusFloorId(floorId);
+                if (floorId) publishPlan({ ...plan, activeFloorId: floorId });
+              }}
+            />
+          ) : null}
+          {viewMode !== "building" && referenceFloor ? (
+            <div className="plan-floor-reference-note">
+              <Layers size={16} aria-hidden="true" />
+              <div><strong>محدوده طبقه زیرین</strong><span>خط قرمز، مرز «{referenceFloor.name}» است؛ بهتر است دیوارهای این طبقه داخل آن بمانند.</span></div>
+            </div>
+          ) : null}
+          {viewMode !== "building" && backdropControls ? (
             <BackdropControls
               backdrop={backdropControls}
               isPlacing={Boolean(pendingBackdrop)}
@@ -622,15 +741,16 @@ export function FloorPlanDesigner({
               }}
             />
           ) : null}
-          <PlanInspector
+          {viewMode !== "building" ? <PlanInspector
             floor={activeFloor}
             selection={selection}
             activeTool={tool}
+            wallDrawMode={wallDrawMode}
             defaults={designDefaults}
             onDefaultsChange={(patch) => commit({ ...plan, defaults: { ...designDefaults, ...patch } })}
             onFloorChange={updateFloor}
             onSelect={setSelection}
-          />
+          /> : null}
         </div>
       </div>
 
@@ -664,6 +784,127 @@ export function FloorPlanDesigner({
         </div>
       </div>
     </section>
+  );
+}
+
+function WallToolMenu({
+  active,
+  mode,
+  onSelect
+}: {
+  active: boolean;
+  mode: WallDrawMode;
+  onSelect: (mode: WallDrawMode) => void;
+}) {
+  return (
+    <div className="plan-object-tool-menu plan-wall-tool-menu">
+      <button
+        type="button"
+        className={active ? "plan-object-tool-trigger active" : "plan-object-tool-trigger"}
+        onClick={() => onSelect(mode)}
+        aria-haspopup="menu"
+        title="انتخاب روش رسم دیوار"
+      >
+        <BrickWall className="plan-object-tool-main-icon" size={16} aria-hidden="true" />
+        <span>دیوار</span>
+        <ChevronDown className="plan-object-tool-chevron" size={11} aria-hidden="true" />
+      </button>
+      <div className="plan-object-tool-popover plan-wall-mode-popover" role="menu" aria-label="روش رسم دیوار">
+        <div className="plan-object-tool-popover-title">
+          <BrickWall size={17} aria-hidden="true" />
+          <div><strong>روش رسم دیوار</strong><small>حالت موردنظر را انتخاب کنید</small></div>
+        </div>
+        <button type="button" className={mode === "line" ? "active" : ""} role="menuitem" onClick={() => onSelect("line")}>
+          <span><strong>دیوار خطی</strong><small>رسم یک دیوار بین دو نقطه</small></span>
+          <Minus size={18} aria-hidden="true" />
+        </button>
+        <button type="button" className={mode === "rectangle" ? "active" : ""} role="menuitem" onClick={() => onSelect("rectangle")}>
+          <span><strong>فضای مستطیلی</strong><small>ساخت چهار دیوار بسته با دو کلیک</small></span>
+          <Square size={17} aria-hidden="true" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ObstacleToolMenu({
+  group,
+  label,
+  icon: Icon,
+  onPick
+}: {
+  group: ObstaclePreset["group"];
+  label: string;
+  icon: typeof CarFront;
+  onPick: (preset: ObstaclePreset) => void;
+}) {
+  const presets = obstaclePresets.filter((preset) => preset.group === group);
+  return (
+    <div className={`plan-object-tool-menu is-${group}`}>
+      <button
+        type="button"
+        className="plan-object-tool-trigger"
+        aria-haspopup="menu"
+        title={`انتخاب مدل ${label}`}
+      >
+        <Icon className="plan-object-tool-main-icon" size={16} aria-hidden="true" />
+        <span>{label}</span>
+        <ChevronDown className="plan-object-tool-chevron" size={11} aria-hidden="true" />
+      </button>
+      <div className="plan-object-tool-popover" role="menu" aria-label={`مدل‌های ${label}`}>
+        <div className="plan-object-tool-popover-title">
+          <Icon size={17} aria-hidden="true" />
+          <div><strong>انتخاب {label}</strong><small>برای افزودن روی مدل کلیک کنید</small></div>
+        </div>
+        {presets.map((preset) => (
+          <button key={preset.id} type="button" role="menuitem" onClick={() => onPick(preset)}>
+            <span><strong>{preset.label}</strong><small>{preset.description}</small></span>
+            <em>{preset.widthM} × {preset.depthM} × {preset.heightM} m</em>
+            <Plus size={14} aria-hidden="true" />
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function BuildingPreviewPanel({
+  floors,
+  focusedFloorId,
+  onFocus
+}: {
+  floors: FloorPlan[];
+  focusedFloorId: string | null;
+  onFocus: (floorId: string | null) => void;
+}) {
+  return (
+    <aside className="building-preview-panel">
+      <header>
+        <span><Building2 size={19} aria-hidden="true" /></span>
+        <div><strong>طبقات ساختمان</strong><small>طبقه انتخابی واضح و سایر طبقات شفاف نمایش داده می‌شوند.</small></div>
+      </header>
+      <button
+        type="button"
+        className={focusedFloorId === null ? "building-preview-all active" : "building-preview-all"}
+        onClick={() => onFocus(null)}
+      >
+        <Layers size={15} aria-hidden="true" />نمایش هم‌زمان همه طبقات
+      </button>
+      <div className="building-preview-floor-list">
+        {[...floors].reverse().map((floor, reverseIndex) => {
+          const floorNumber = floors.length - reverseIndex;
+          const focused = floor.id === focusedFloorId;
+          return (
+            <button key={floor.id} type="button" className={focused ? "active" : ""} onClick={() => onFocus(floor.id)}>
+              <span className="building-floor-index">{formatFa(floorNumber)}</span>
+              <span><strong>{floor.name}</strong><small>تراز {formatFa(floor.elevationM, 1)} متر · ارتفاع {formatFa(floor.heightM, 1)} متر</small></span>
+              <Eye size={15} aria-hidden="true" />
+            </button>
+          );
+        })}
+      </div>
+      <p>انتخاب طبقه، مختصات افقی آن را تغییر نمی‌دهد؛ بنابراین هنگام بازگشت به نمای نقشه دقیقاً در محل قبلی باقی می‌ماند.</p>
+    </aside>
   );
 }
 

@@ -5,14 +5,13 @@ import type * as THREE_NS from "three";
 import type { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import {
   defaultCameraOptics,
-  defaultWallHeightM,
-  defaultWallThicknessM,
   type FloorPlan,
   type PlanBackdrop,
   type PlanDefaults,
   type PlanSelection,
   type PlanTool,
   type PlanViewMode,
+  type WallDrawMode,
   type Vec2
 } from "@/src/domain/planner/types";
 import { computeCameraCoverage, type CameraCoverage } from "@/src/lib/planner/coverage";
@@ -20,27 +19,25 @@ import {
   collectOccluders,
   collectRightAngleCorners,
   distance,
-  findRightAngleCorner,
-  isAxisAlignedSegment,
   projectPointToWall,
-  snapPoint,
-  snapWallToEqualParallel,
-  type RightAngleCorner
+  snapPoint
 } from "@/src/lib/planner/geometry";
 import {
   buildCameraMarker,
   buildCoverageMesh,
   buildDoorMesh,
+  buildFloorFootprintGuide,
+  buildFloorSlab,
   buildObstacleMesh,
   buildPreviewLine,
   buildPreviewRect,
   buildRightAngleMarker,
-  buildSmartGuideLine,
   buildWallWithDoors,
   buildYawHandle,
   buildBackdrop,
   buildBackdropMesh,
   collectDimensionLabels,
+  applyObjectOpacity,
   disposeGroup
 } from "@/src/lib/planner/scene-builders";
 
@@ -54,15 +51,17 @@ type Bundle = {
   orbitCamera: THREE_NS.PerspectiveCamera;
   topControls: OrbitControls;
   orbitControls: OrbitControls;
-  groups: Record<"content" | "coverage" | "cameras" | "backdrop" | "preview" | "placement", THREE_NS.Group>;
+  groups: Record<"content" | "coverage" | "cameras" | "backdrop" | "preview" | "placement" | "reference", THREE_NS.Group>;
   raycaster: THREE_NS.Raycaster;
   groundPlane: THREE_NS.Plane;
+  sceneGeneration: number;
   frame: number;
 };
 
 export type PlanCanvasProps = {
   floor: FloorPlan;
   tool: PlanTool;
+  wallDrawMode: WallDrawMode;
   viewMode: PlanViewMode;
   selection: PlanSelection;
   snapM: number;
@@ -70,6 +69,9 @@ export type PlanCanvasProps = {
   pendingBackdrop?: PlanBackdrop | null;
   showCoverage: boolean;
   readOnly?: boolean;
+  buildingFloors?: FloorPlan[];
+  focusedFloorId?: string | null;
+  referenceFloor?: FloorPlan | null;
   onSelect: (selection: PlanSelection) => void;
   onFloorChange: (floor: FloorPlan) => void;
   onHint: (hint: string | null) => void;
@@ -87,7 +89,10 @@ type DragState =
 const nextId = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e4).toString(36)}`;
 
 export function PlanCanvas(props: PlanCanvasProps) {
-  const { floor, tool, viewMode, selection, showCoverage, readOnly, onSelect, onFloorChange, onHint } = props;
+  const {
+    floor, tool, viewMode, selection, showCoverage, readOnly, buildingFloors,
+    focusedFloorId, referenceFloor, onSelect, onFloorChange, onHint
+  } = props;
 
   const hostRef = useRef<HTMLDivElement | null>(null);
   const labelHostRef = useRef<HTMLDivElement | null>(null);
@@ -125,7 +130,12 @@ export function PlanCanvas(props: PlanCanvasProps) {
       const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
       renderer.setSize(width, height);
       renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-      renderer.setClearColor(0xf7fbfd, 1);
+      renderer.setClearColor(0xeaf3f7, 1);
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.08;
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
       host.appendChild(renderer.domElement);
 
       const scene = new THREE.Scene();
@@ -173,10 +183,31 @@ export function PlanCanvas(props: PlanCanvasProps) {
         RIGHT: THREE.MOUSE.PAN
       };
 
-      scene.add(new THREE.AmbientLight(0xffffff, 0.75));
-      const sun = new THREE.DirectionalLight(0xffffff, 0.7);
-      sun.position.set(14, 30, 10);
+      scene.add(new THREE.HemisphereLight(0xdff4ff, 0x8aa181, 1.35));
+      const sun = new THREE.DirectionalLight(0xfff4df, 2.2);
+      sun.position.set(18, 32, 14);
+      sun.castShadow = true;
+      sun.shadow.mapSize.set(2048, 2048);
+      sun.shadow.camera.left = -45;
+      sun.shadow.camera.right = 45;
+      sun.shadow.camera.top = 45;
+      sun.shadow.camera.bottom = -45;
+      sun.shadow.camera.near = 1;
+      sun.shadow.camera.far = 90;
+      sun.shadow.bias = -0.0005;
       scene.add(sun);
+      const fill = new THREE.DirectionalLight(0x9edcff, 0.7);
+      fill.position.set(-16, 12, -10);
+      scene.add(fill);
+
+      const ground = new THREE.Mesh(
+        new THREE.PlaneGeometry(200, 200),
+        new THREE.MeshStandardMaterial({ color: 0xf3f8f7, roughness: 0.94, metalness: 0 })
+      );
+      ground.rotation.x = -Math.PI / 2;
+      ground.position.y = -0.035;
+      ground.receiveShadow = true;
+      scene.add(ground);
 
       // Two grid densities make scale readable without turning the canvas into visual noise:
       // a one-metre construction grid and a stronger five-metre navigation grid.
@@ -199,7 +230,8 @@ export function PlanCanvas(props: PlanCanvasProps) {
         cameras: new THREE.Group(),
         backdrop: new THREE.Group(),
         preview: new THREE.Group(),
-        placement: new THREE.Group()
+        placement: new THREE.Group(),
+        reference: new THREE.Group()
       };
       Object.values(groups).forEach((group) => scene.add(group));
 
@@ -207,6 +239,7 @@ export function PlanCanvas(props: PlanCanvasProps) {
         THREE, renderer, scene, topCamera, orbitCamera, topControls, orbitControls, groups,
         raycaster: new THREE.Raycaster(),
         groundPlane: new THREE.Plane(new THREE.Vector3(0, 1, 0), 0),
+        sceneGeneration: 0,
         frame: 0
       };
       bundleRef.current = bundle;
@@ -266,9 +299,9 @@ export function PlanCanvas(props: PlanCanvasProps) {
   useEffect(() => {
     const bundle = bundleRef.current;
     if (!bundle) return;
-    syncScene(bundle, { floor, selection } as PlanCanvasProps, coverages);
-    renderLabels(labelHostRef.current, collectDimensionLabels(floor));
-  }, [floor, selection, coverages]);
+    syncScene(bundle, { floor, selection, viewMode, buildingFloors, focusedFloorId, referenceFloor }, coverages);
+    renderLabels(labelHostRef.current, viewMode === "building" ? [] : collectDimensionLabels(floor));
+  }, [floor, selection, coverages, buildingFloors, focusedFloorId, referenceFloor, viewMode]);
 
   useEffect(() => {
     const bundle = bundleRef.current;
@@ -295,9 +328,12 @@ export function PlanCanvas(props: PlanCanvasProps) {
       topControls.enabled = true;
       orbitControls.enabled = false;
     } else {
-      orbitControls.target.set(topControls.target.x, 0, topControls.target.z);
-      const radius = 24;
-      orbitCamera.position.set(topControls.target.x + radius * 0.7, 20, topControls.target.z + radius * 0.7);
+      const totalHeight = viewMode === "building"
+        ? Math.max(...(latest.current.buildingFloors ?? [latest.current.floor]).map((item) => item.elevationM + item.heightM), 3.2)
+        : 0;
+      orbitControls.target.set(topControls.target.x, totalHeight * 0.45, topControls.target.z);
+      const radius = viewMode === "building" ? Math.max(28, totalHeight * 3.2) : 24;
+      orbitCamera.position.set(topControls.target.x + radius * 0.72, totalHeight * 0.55 + radius * 0.62, topControls.target.z + radius * 0.72);
       orbitControls.enabled = true;
       topControls.enabled = false;
     }
@@ -354,7 +390,8 @@ export function PlanCanvas(props: PlanCanvasProps) {
     // Cameras and their yaw handles are tested first so a handle always wins over a wall.
     const targets = [...bundle.groups.cameras.children, ...bundle.groups.content.children];
     for (const hit of bundle.raycaster.intersectObjects(targets, true)) {
-      const data = hit.object.userData as { kind?: string; id?: string };
+      const data = hit.object.userData as { kind?: string; id?: string; floorId?: string };
+      if (data.floorId && data.floorId !== latest.current.floor.id) continue;
       if (data.kind && data.id) return { kind: data.kind, id: data.id };
     }
     return null;
@@ -398,31 +435,9 @@ export function PlanCanvas(props: PlanCanvasProps) {
       current.onPlaceBackdrop?.(point);
       return;
     }
-    let snapped = snapPoint(point, current.snapM);
+    const snapped = snapPoint(point, current.snapM);
     const picked = pickAt(event.clientX, event.clientY);
     const activeDraft = draftRef.current;
-
-    /*
-     * A wall chain remains active after every segment. Clicking the body of an existing
-     * wall should inspect it, not silently extend the chain. Endpoints are reserved for
-     * intentional joins/closure, so drawing connected rooms stays quick.
-     */
-    if (current.tool === "wall" && activeDraft?.kind === "wall" && picked?.kind === "wall") {
-      const wall = current.floor.walls.find((item) => item.id === picked.id);
-      const endpointToleranceM = Math.max(0.18, Math.min(0.6, current.snapM * 0.45));
-      const nearEndpoint = wall
-        ? Math.min(distance(point, wall.a), distance(point, wall.b)) <= endpointToleranceM
-        : false;
-      if (!nearEndpoint) {
-        draftRef.current = null;
-        const bundle = bundleRef.current;
-        if (bundle) disposeGroup(bundle.groups.preview);
-        clearSmartGuideLabel(smartGuideLabelHostRef.current);
-        onSelect({ kind: "wall", id: picked.id });
-        onHint("تنظیمات دیوار در پنل سمت راست باز شد؛ برای شروع خط جدید روی فضای خالی کلیک کنید");
-        return;
-      }
-    }
 
     /*
      * Inspecting an existing object must not require leaving the active drawing tool.
@@ -519,29 +534,72 @@ export function PlanCanvas(props: PlanCanvasProps) {
     if (!draft) {
       onSelect(null);
       draftRef.current = { kind: current.tool as "wall" | "obstacle" | "measure", start: snapped };
-      onHint(current.tool === "wall" ? "نقطه پایان دیوار را بزنید — کلیک راست یا Esc برای پایان" : "نقطه مقابل را بزنید");
+      onHint(current.tool === "wall"
+        ? current.wallDrawMode === "line"
+          ? "نقطه پایان دیوار خطی را انتخاب کنید — Esc برای لغو"
+          : "گوشه مقابل مستطیل را انتخاب کنید — Esc برای لغو"
+        : "نقطه مقابل را بزنید");
       return;
     }
 
     if (draft.kind === "wall") {
-      const smartSnap = snapWallToEqualParallel(
-        draft.start,
-        snapped,
-        current.floor.walls,
-        Math.max(0.2, Math.min(0.75, current.snapM * 1.5))
-      );
-      if (smartSnap) snapped = smartSnap.point;
+      if (current.wallDrawMode === "line") {
+        const lengthM = distance(draft.start, snapped);
+        if (lengthM >= 0.1) {
+          onFloorChange({
+            ...current.floor,
+            walls: [...current.floor.walls, {
+              id: nextId("wall"),
+              a: draft.start,
+              b: snapped,
+              heightM: current.defaults.wallHeightM,
+              thicknessM: current.defaults.wallThicknessM,
+              blocksView: true
+            }]
+          });
+          onHint(`دیوار خطی به طول ${lengthM.toFixed(2)} متر رسم شد`);
+        } else {
+          onHint("طول دیوار باید حداقل ۱۰ سانتی‌متر باشد");
+        }
+        draftRef.current = null;
+        const bundle = bundleRef.current;
+        if (bundle) disposeGroup(bundle.groups.preview);
+        clearSmartGuideLabel(smartGuideLabelHostRef.current);
+        return;
+      }
 
-      if (distance(draft.start, snapped) >= 0.1) {
+      const widthM = Math.abs(snapped.x - draft.start.x);
+      const depthM = Math.abs(snapped.z - draft.start.z);
+      if (widthM >= 0.2 && depthM >= 0.2) {
+        const minX = Math.min(draft.start.x, snapped.x);
+        const maxX = Math.max(draft.start.x, snapped.x);
+        const minZ = Math.min(draft.start.z, snapped.z);
+        const maxZ = Math.max(draft.start.z, snapped.z);
+        const corners: Vec2[] = [
+          { x: minX, z: minZ },
+          { x: maxX, z: minZ },
+          { x: maxX, z: maxZ },
+          { x: minX, z: maxZ }
+        ];
+        const walls = corners.map((a, index) => ({
+          id: nextId("wall"),
+          a,
+          b: corners[(index + 1) % corners.length],
+          heightM: current.defaults.wallHeightM,
+          thicknessM: current.defaults.wallThicknessM,
+          blocksView: true
+        }));
         onFloorChange({
           ...current.floor,
-          walls: [...current.floor.walls, {
-            id: nextId("wall"), a: draft.start, b: snapped,
-            heightM: current.defaults.wallHeightM, thicknessM: current.defaults.wallThicknessM, blocksView: true
-          }]
+          walls: [...current.floor.walls, ...walls]
         });
-        draftRef.current = { kind: "wall", start: snapped };
+        onHint(`مستطیل ${widthM.toFixed(2)} × ${depthM.toFixed(2)} متر رسم شد`);
+      } else {
+        onHint("طول و عرض مستطیل باید حداقل ۲۰ سانتی‌متر باشد");
       }
+      draftRef.current = null;
+      const bundle = bundleRef.current;
+      if (bundle) disposeGroup(bundle.groups.preview);
       clearSmartGuideLabel(smartGuideLabelHostRef.current);
       return;
     }
@@ -619,49 +677,28 @@ export function PlanCanvas(props: PlanCanvasProps) {
       return;
     }
 
-    const gridSnapped = snapPoint(point, current.snapM);
-    const smartSnap = draft.kind === "wall"
-      ? snapWallToEqualParallel(
-          draft.start,
-          gridSnapped,
-          current.floor.walls,
-          Math.max(0.2, Math.min(0.75, current.snapM * 1.5))
-        )
-      : null;
-    const snapped = smartSnap?.point ?? gridSnapped;
-    if (draft.kind === "obstacle") {
+    const snapped = snapPoint(point, current.snapM);
+    if (draft.kind === "obstacle" || (draft.kind === "wall" && current.wallDrawMode === "rectangle")) {
       clearSmartGuideLabel(smartGuideLabelHostRef.current);
-      bundle.groups.preview.add(buildPreviewRect(bundle.THREE, draft.start, snapped));
-      onHint(`${Math.abs(snapped.x - draft.start.x).toFixed(2)} × ${Math.abs(snapped.z - draft.start.z).toFixed(2)} متر`);
+      bundle.groups.preview.add(buildPreviewRect(
+        bundle.THREE,
+        draft.start,
+        snapped,
+        draft.kind === "wall" ? 0xe6572f : undefined
+      ));
+      const widthM = Math.abs(snapped.x - draft.start.x).toFixed(2);
+      const depthM = Math.abs(snapped.z - draft.start.z).toFixed(2);
+      onHint(draft.kind === "wall"
+        ? `طول ${widthM} متر × عرض ${depthM} متر — کلیک برای ساخت چهار دیوار`
+        : `${widthM} × ${depthM} متر`);
     } else {
-      // Alignment badges use the raw pointer, not the grid-snapped point. Otherwise a
-      // coarse snap setting can incorrectly call a visibly angled pointer "horizontal".
-      const firstWallOnAxis = draft.kind === "wall"
-        && current.floor.walls.length === 0
-        && isAxisAlignedSegment(draft.start, point);
-      const line = buildPreviewLine(bundle.THREE, draft.start, snapped, firstWallOnAxis ? 0x9a5b2c : undefined);
+      const line = buildPreviewLine(bundle.THREE, draft.start, snapped);
       (line as THREE_NS.Line).computeLineDistances();
       bundle.groups.preview.add(line);
-      const rightAngle = draft.kind === "wall"
-        ? findPreviewRightAngle(current.floor, draft.start, point)
-        : null;
-      if (rightAngle) bundle.groups.preview.add(buildRightAngleMarker(bundle.THREE, rightAngle));
-
-      if (smartSnap) {
-        bundle.groups.preview.add(buildSmartGuideLine(bundle.THREE, smartSnap.guideFrom, smartSnap.guideTo));
-        renderSmartGuideLabel(
-          smartGuideLabelHostRef.current,
-          `هم‌اندازه · ${smartSnap.lengthM.toFixed(2)} m`,
-          smartSnap.guideTo
-        );
-        onHint(`هم‌اندازه و موازی با دیوار مرجع — ${smartSnap.lengthM.toFixed(2)} متر`);
-      } else {
-        clearSmartGuideLabel(smartGuideLabelHostRef.current);
-        const headingDeg = segmentHeadingDeg(draft.start, point);
-        if (rightAngle) onHint(`زاویه قائمه دقیق — طول ${distance(draft.start, snapped).toFixed(2)} متر`);
-        else if (firstWallOnAxis) onHint(`هم‌راستا با محور صفحه — طول ${distance(draft.start, snapped).toFixed(2)} متر`);
-        else onHint(`طول ${distance(draft.start, snapped).toFixed(2)} متر — زاویه ${headingDeg.toFixed(1)}°`);
-      }
+      clearSmartGuideLabel(smartGuideLabelHostRef.current);
+      onHint(draft.kind === "wall"
+        ? `طول دیوار ${distance(draft.start, snapped).toFixed(2)} متر — کلیک برای رسم`
+        : `فاصله ${distance(draft.start, snapped).toFixed(2)} متر`);
     }
   }, [onFloorChange, onHint, planPointAt]);
 
@@ -740,14 +777,61 @@ export function PlanCanvas(props: PlanCanvasProps) {
 
 /* ── Scene sync ────────────────────────────────────────────────────── */
 
-function syncScene(bundle: Bundle, props: Pick<PlanCanvasProps, "floor" | "selection">, coverages: CameraCoverage[]) {
+function syncScene(
+  bundle: Bundle,
+  props: Pick<PlanCanvasProps, "floor" | "selection" | "viewMode" | "buildingFloors" | "focusedFloorId" | "referenceFloor">,
+  coverages: CameraCoverage[]
+) {
   const { THREE, groups } = bundle;
-  const { floor, selection } = props;
+  const { floor, selection, buildingFloors, focusedFloorId, referenceFloor, viewMode } = props;
+  const sceneGeneration = ++bundle.sceneGeneration;
 
   disposeGroup(groups.content);
   disposeGroup(groups.cameras);
   disposeGroup(groups.coverage);
   disposeGroup(groups.backdrop);
+  disposeGroup(groups.reference);
+
+  if (viewMode === "building" && buildingFloors?.length) {
+    for (const stackedFloor of buildingFloors) {
+      const isFocused = !focusedFloorId || stackedFloor.id === focusedFloorId;
+      const opacity = focusedFloorId ? (isFocused ? 1 : 0.16) : 0.82;
+      const floorGroup = new THREE.Group();
+      floorGroup.position.y = stackedFloor.elevationM;
+      floorGroup.userData = { kind: "building-floor", floorId: stackedFloor.id, floorOpacity: opacity };
+      floorGroup.add(buildFloorSlab(THREE, stackedFloor, isFocused));
+      for (const wall of stackedFloor.walls) {
+        const doors = (stackedFloor.doors ?? []).filter((door) => door.wallId === wall.id);
+        floorGroup.add(buildWallWithDoors(THREE, wall, doors, false));
+      }
+      for (const obstacle of stackedFloor.obstacles) {
+        floorGroup.add(buildObstacleMesh(THREE, obstacle, false, {
+          floorId: stackedFloor.id,
+          sceneGeneration
+        }));
+      }
+      for (const door of stackedFloor.doors ?? []) {
+        const wall = stackedFloor.walls.find((item) => item.id === door.wallId);
+        if (wall) floorGroup.add(buildDoorMesh(THREE, door, wall, false));
+      }
+      for (const camera of stackedFloor.cameras) {
+        floorGroup.add(buildCameraMarker(
+          THREE,
+          camera.id,
+          camera.position,
+          camera.optics.mountHeightM,
+          camera.yawDeg,
+          false,
+          camera.housing
+        ));
+      }
+      applyObjectOpacity(floorGroup, opacity);
+      groups.content.add(floorGroup);
+    }
+    return;
+  }
+
+  if (referenceFloor) groups.reference.add(buildFloorFootprintGuide(THREE, referenceFloor));
 
   const backdrop = buildBackdrop(THREE, floor);
   if (backdrop) groups.backdrop.add(backdrop);
@@ -760,7 +844,12 @@ function syncScene(bundle: Bundle, props: Pick<PlanCanvasProps, "floor" | "selec
     groups.content.add(buildRightAngleMarker(THREE, corner));
   }
   for (const obstacle of floor.obstacles) {
-    groups.content.add(buildObstacleMesh(THREE, obstacle, selection?.kind === "obstacle" && selection.id === obstacle.id));
+    groups.content.add(buildObstacleMesh(
+      THREE,
+      obstacle,
+      selection?.kind === "obstacle" && selection.id === obstacle.id,
+      { floorId: floor.id, sceneGeneration }
+    ));
   }
   for (const door of floor.doors ?? []) {
     const wall = floor.walls.find((item) => item.id === door.wallId);
@@ -826,41 +915,6 @@ function ensureBackdropPlacement(bundle: Bundle, backdrop: PlanBackdrop): THREE_
   }
   updateBackdropPreviewAppearance(mesh, backdrop);
   return mesh;
-}
-
-function findPreviewRightAngle(floor: FloorPlan, start: Vec2, end: Vec2): RightAngleCorner | null {
-  const previewWall = {
-    id: "preview-wall",
-    a: start,
-    b: end,
-    heightM: defaultWallHeightM,
-    thicknessM: defaultWallThicknessM,
-    blocksView: true
-  };
-  for (let index = floor.walls.length - 1; index >= 0; index -= 1) {
-    const corner = findRightAngleCorner(floor.walls[index], previewWall);
-    if (corner) return corner;
-  }
-  return null;
-}
-
-function segmentHeadingDeg(start: Vec2, end: Vec2): number {
-  const degrees = (Math.atan2(end.z - start.z, end.x - start.x) * 180) / Math.PI;
-  return (degrees + 360) % 180;
-}
-
-function renderSmartGuideLabel(host: HTMLDivElement | null, text: string, world: Vec2) {
-  if (!host) return;
-  let node = host.firstElementChild as HTMLElement | null;
-  if (!node) {
-    node = document.createElement("span");
-    node.className = "plan-smart-guide-label";
-    host.appendChild(node);
-  }
-  node.textContent = text;
-  node.dataset.worldX = String(world.x);
-  node.dataset.worldY = "0.2";
-  node.dataset.worldZ = String(world.z);
 }
 
 function clearSmartGuideLabel(host: HTMLDivElement | null) {

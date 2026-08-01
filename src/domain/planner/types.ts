@@ -35,12 +35,25 @@ export type PlanDoor = {
   openAngleDeg: number;
 };
 
-export type ObstacleKind = "block" | "pillar" | "shelf" | "vehicle" | "counter";
+export type ObstacleKind = "block" | "pillar" | "shelf" | "vehicle" | "counter" | "tree" | "stairs";
+
+export type ObstacleVariant =
+  | "sedan"
+  | "suv"
+  | "pickup"
+  | "van"
+  | "truck"
+  | "deciduous"
+  | "conifer"
+  | "palm"
+  | "stairs-straight";
 
 export type PlanObstacle = {
   id: string;
   label: string;
   kind: ObstacleKind;
+  /** Optional visual model. Geometry calculations continue to use the editable envelope below. */
+  variant?: ObstacleVariant;
   center: Vec2;
   widthM: number;
   depthM: number;
@@ -148,7 +161,8 @@ export type PlanDefaults = {
 };
 
 export type PlanTool = "select" | "wall" | "door" | "obstacle" | "camera" | "measure";
-export type PlanViewMode = "top" | "orbit";
+export type PlanViewMode = "top" | "orbit" | "building";
+export type WallDrawMode = "line" | "rectangle";
 
 export type PlanSelection =
   | { kind: "wall"; id: string }
