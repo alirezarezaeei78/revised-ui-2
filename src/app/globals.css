@@ -7726,12 +7726,12 @@ h3 {
 
 .plan-toolbar {
   display: grid;
-  grid-template-columns: minmax(300px, 1.2fr) minmax(240px, 1fr) minmax(180px, .72fr) auto;
-  grid-template-areas: "drawing view settings history";
+  grid-template-columns: minmax(270px, 1.2fr) minmax(138px, .54fr) minmax(138px, .56fr) minmax(122px, .5fr) minmax(158px, .62fr);
+  grid-template-areas: "drawing essentials view settings history";
   align-items: stretch;
-  gap: 7px;
+  gap: 6px;
   max-width: 100%;
-  padding: 7px;
+  padding: 6px;
   overflow: visible;
   background: linear-gradient(180deg, #f8fbfd 0%, #eef5f9 100%);
   border: 1px solid #cddfe9;
@@ -8023,12 +8023,14 @@ h3 {
 
 .plan-ribbon-drawing,
 .plan-ribbon-interior,
-.plan-ribbon-objects { background: rgba(247, 252, 255, .96); }
+.plan-ribbon-objects,
+.plan-ribbon-essentials { background: rgba(247, 252, 255, .96); }
 .plan-ribbon-interior,
 .plan-ribbon-objects { padding-inline: 10px; }
 .plan-ribbon-interior .plan-tool-group,
 .plan-ribbon-objects .plan-tool-group { justify-content: flex-start; }
 .plan-ribbon-drawing { grid-area: drawing; }
+.plan-ribbon-essentials { grid-area: essentials; }
 .plan-ribbon-interior { grid-area: interior; }
 .plan-ribbon-objects { grid-area: objects; }
 .plan-ribbon-view { grid-area: view; }
@@ -8045,14 +8047,27 @@ h3 {
 .plan-ribbon-section .plan-tool-group > button {
   flex-direction: column;
   justify-content: center;
-  width: 56px;
-  min-width: 56px;
+  width: 44px;
+  min-width: 44px;
   height: 58px;
   min-height: 58px;
   padding: 5px 4px;
   font-size: 10px;
   line-height: 1.25;
   text-align: center;
+}
+
+.plan-ribbon-essentials .plan-object-tool-trigger {
+  width: 40px;
+  min-width: 40px;
+  height: 58px;
+  min-height: 58px;
+  padding-inline: 2px;
+  font-size: 9px;
+}
+.plan-ribbon-essentials .plan-object-tool-menu:last-child .plan-object-tool-popover {
+  inset-inline-start: auto;
+  inset-inline-end: 0;
 }
 
 .plan-ribbon-section .plan-tool-group > button svg {
@@ -8078,9 +8093,9 @@ h3 {
   display: grid;
   align-content: center;
   gap: 4px;
-  min-width: 96px;
+  min-width: 76px;
   min-height: 52px;
-  padding: 5px 8px;
+  padding: 4px 5px;
   color: #587686;
   background: #f8fbfd;
   border: 1px solid var(--border);
@@ -8111,7 +8126,13 @@ h3 {
 }
 
 .plan-history-tools { grid-area: history; margin-inline-start: 0; }
-.plan-history-tools button { min-width: 54px; padding-inline: 8px; font-size: 10px; }
+.plan-history-tools button { min-width: 39px; padding-inline: 6px; font-size: 9px; }
+.plan-history-tools .plan-advanced-toggle { min-width: 72px; direction: rtl; }
+.plan-element-strip.is-advanced { animation: planAdvancedReveal .18s ease-out; }
+@keyframes planAdvancedReveal {
+  from { opacity: 0; transform: translateY(-5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
 
 .plan-defaults-section {
   display: grid;
@@ -9203,6 +9224,46 @@ h3 {
   border-radius: 11px;
 }
 
+.plan-coverage-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 4px 8px;
+  color: #617b89;
+  background: #fff;
+  border: 1px solid #d4e3ea;
+  border-radius: 9px;
+  font-family: inherit;
+  font-size: 9.5px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.plan-coverage-toggle > svg { color: #7896a5; }
+.plan-toggle-track {
+  position: relative;
+  width: 27px;
+  height: 15px;
+  background: #c6d4db;
+  border-radius: 99px;
+  transition: background .16s ease;
+}
+.plan-toggle-track > i {
+  position: absolute;
+  inset-block-start: 2px;
+  inset-inline-start: 2px;
+  width: 11px;
+  height: 11px;
+  background: #fff;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(25, 61, 80, .28);
+  transition: transform .16s ease;
+}
+.plan-coverage-toggle.active { color: #0d628f; background: #eef8fc; border-color: #80bfdb; }
+.plan-coverage-toggle.active .plan-toggle-track { background: var(--accent); }
+.plan-coverage-toggle.active .plan-toggle-track > i { transform: translateX(-12px); }
+.plan-coverage-toggle.active > svg { color: var(--accent); }
+
 .plan-closure-warning {
   display: flex;
   align-items: flex-start;
@@ -9223,11 +9284,12 @@ h3 {
 .plan-metrics { display: flex; flex-wrap: wrap; gap: 12px; font-size: 11px; color: var(--muted); }
 .plan-metrics strong { color: var(--accent-strong); }
 
-@media (max-width: 1180px) {
+@media (max-width: 860px) {
   .plan-toolbar {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     grid-template-areas:
-      "drawing view"
+      "drawing drawing"
+      "essentials view"
       "settings history";
   }
   .plan-designer-cameras .plan-toolbar {
@@ -9274,6 +9336,7 @@ h3 {
       "history history"
       "settings settings"
       "view view"
+      "essentials essentials"
       "drawing drawing";
   }
   .plan-designer-cameras .plan-toolbar {
@@ -9291,7 +9354,7 @@ h3 {
 @media (max-width: 560px) {
   .plan-toolbar {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-areas: "history" "settings" "view" "drawing";
+    grid-template-areas: "history" "settings" "view" "essentials" "drawing";
   }
   .plan-designer-cameras .plan-toolbar {
     grid-template-areas: "history" "settings" "view" "drawing";

@@ -219,6 +219,20 @@ test("public-safety and education samples stay detailed without copying a sensit
   }
 });
 
+test("the compact ribbon keeps essential assets visible and gates advanced categories", () => {
+  const source = fs.readFileSync(path.resolve("src", "components", "planner", "FloorPlanDesigner.tsx"), "utf8");
+  const essentials = source.slice(source.indexOf('className="plan-ribbon-section plan-ribbon-essentials"'), source.indexOf('className="plan-ribbon-section plan-ribbon-view"'));
+  const advanced = source.slice(source.indexOf('className="plan-element-strip is-advanced"'), source.indexOf('className="plan-defaults-section"'));
+  const ribbon = source.slice(source.indexOf('className="plan-toolbar plan-ribbon"'), source.indexOf('className="plan-element-strip is-advanced"'));
+
+  for (const group of ["vehicle", "structure", "tree"]) assert.ok(essentials.includes(`group="${group}"`), `${group} must stay in the main ribbon`);
+  for (const group of ["vehicle", "structure", "tree"]) assert.equal(advanced.includes(`group="${group}"`), false, `${group} must not be duplicated in advanced assets`);
+  assert.ok(source.includes('useState(false);'));
+  assert.ok(source.includes('mode === "environment" && showAdvancedElements'));
+  assert.equal(ribbon.includes("پوشش DORI"), false, "DORI must not consume main-ribbon space");
+  assert.ok(source.includes('className={showCoverage ? "plan-coverage-toggle active" : "plan-coverage-toggle"}'));
+});
+
 test("work and dining chairs face their nearest table", () => {
   const tableVariants = new Set(["office-desk", "meeting-table", "dining-table"]);
   for (const sampleId of ["luxury-villa", "modern-office", "retail-gallery", "factory-campus", "residential-parking", "kourosh-mall"]) {

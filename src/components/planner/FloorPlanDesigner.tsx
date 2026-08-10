@@ -142,6 +142,7 @@ export function FloorPlanDesigner({
   const [buildingFloorFilter, setBuildingFloorFilter] = useState<BuildingFloorFilter>("above");
   const [selection, setSelection] = useState<PlanSelection>(emptySelection);
   const [showCoverage, setShowCoverage] = useState(true);
+  const [showAdvancedElements, setShowAdvancedElements] = useState(false);
   const [hint, setHint] = useState<string | null>(null);
   const [pendingBackdrop, setPendingBackdrop] = useState<PlanBackdrop | null>(null);
   const [showDefaults, setShowDefaults] = useState(false);
@@ -621,6 +622,17 @@ export function FloorPlanDesigner({
           <span className="plan-ribbon-label">ترسیم و جانمایی</span>
         </section>
 
+        {mode === "environment" ? (
+          <section className="plan-ribbon-section plan-ribbon-essentials" aria-label="عناصر آماده پرکاربرد">
+            <div className="plan-tool-group">
+              <ObstacleToolMenu group="vehicle" label="خودرو" icon={CarFront} onPick={addPresetObstacle} />
+              <ObstacleToolMenu group="structure" label="سازه" icon={ChartNoAxesGantt} onPick={addPresetObstacle} />
+              <ObstacleToolMenu group="tree" label="درخت" icon={TreePine} onPick={addPresetObstacle} />
+            </div>
+            <span className="plan-ribbon-label">عناصر آماده</span>
+          </section>
+        ) : null}
+
         <section className="plan-ribbon-section plan-ribbon-view" aria-label="نمایش">
           <div className="plan-tool-group">
           <button type="button" className={viewMode === "top" ? "active" : ""} onClick={() => setViewMode("top")}>
@@ -648,9 +660,6 @@ export function FloorPlanDesigner({
             title="چیدمان همه طبقات روی یکدیگر"
           >
             <Building2 size={16} aria-hidden="true" /><span>پیش‌نمایش ساختمان</span>
-          </button>
-          <button type="button" className={showCoverage ? "active" : ""} onClick={() => setShowCoverage((value) => !value)}>
-            <Eye size={16} aria-hidden="true" /><span>پوشش DORI</span>
           </button>
           </div>
           <span className="plan-ribbon-label">نمایش</span>
@@ -707,14 +716,26 @@ export function FloorPlanDesigner({
           >
             <Redo2 size={16} aria-hidden="true" /><span>Redo</span>
           </button>
+          {mode === "environment" ? (
+            <button
+              type="button"
+              dir="rtl"
+              className={showAdvancedElements ? "plan-advanced-toggle active" : "plan-advanced-toggle"}
+              onClick={() => setShowAdvancedElements((value) => !value)}
+              aria-pressed={showAdvancedElements}
+              title="نمایش یا پنهان‌سازی دسته‌های تخصصی المان‌ها"
+            >
+              <Sparkles size={16} aria-hidden="true" /><span>پیشرفته</span>
+            </button>
+          ) : null}
         </div>
       </div>
 
-      {mode === "environment" ? (
-        <section className="plan-element-strip" aria-label="عناصر آماده">
+      {mode === "environment" && showAdvancedElements ? (
+        <section className="plan-element-strip is-advanced" aria-label="المان‌های پیشرفته">
           <div className="plan-element-strip-label">
-            <strong>عناصر آماده</strong>
-            <small>{formatFa(obstaclePresets.length)} المان</small>
+            <strong>المان‌های پیشرفته</strong>
+            <small>{formatFa(obstaclePresets.filter((item) => !["vehicle", "structure", "tree"].includes(item.group)).length)} المان</small>
           </div>
           <div className="plan-element-strip-grid">
             <ObstacleToolMenu group="living" label="پذیرایی" icon={Sofa} onPick={addPresetObstacle} />
@@ -730,10 +751,7 @@ export function FloorPlanDesigner({
             <ObstacleToolMenu group="warehouse" label="انبار" icon={Warehouse} onPick={addPresetObstacle} />
             <ObstacleToolMenu group="parking" label="پارکینگ" icon={CircleParking} onPick={addPresetObstacle} />
             <ObstacleToolMenu group="landscape" label="محوطه" icon={Sprout} onPick={addPresetObstacle} />
-            <ObstacleToolMenu group="tree" label="درخت" icon={TreePine} onPick={addPresetObstacle} />
             <ObstacleToolMenu group="site" label="تجهیزات" icon={Fence} onPick={addPresetObstacle} />
-            <ObstacleToolMenu group="vehicle" label="خودرو" icon={CarFront} onPick={addPresetObstacle} />
-            <ObstacleToolMenu group="structure" label="سازه" icon={ChartNoAxesGantt} onPick={addPresetObstacle} />
           </div>
         </section>
       ) : null}
@@ -927,6 +945,18 @@ export function FloorPlanDesigner({
 
       <div className="plan-statusbar">
         <span className="plan-hint">{hint ?? activeTool?.hint}</span>
+        {mode === "cameras" ? (
+          <button
+            type="button"
+            className={showCoverage ? "plan-coverage-toggle active" : "plan-coverage-toggle"}
+            onClick={() => setShowCoverage((value) => !value)}
+            aria-pressed={showCoverage}
+          >
+            <span className="plan-toggle-track" aria-hidden="true"><i /></span>
+            <Eye size={14} aria-hidden="true" />
+            پوشش DORI
+          </button>
+        ) : null}
         <div className="plan-metrics">
           <span className="plan-grid-readout" title="خطوط پررنگ شبکه هر ۵ متر تکرار می‌شوند">
             <Grid3x3 size={13} aria-hidden="true" />
