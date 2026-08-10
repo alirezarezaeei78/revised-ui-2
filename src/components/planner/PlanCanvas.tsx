@@ -5,21 +5,28 @@ import type * as THREE_NS from "three";
 import type { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import {
   defaultCameraOptics,
+  isSelected,
+  soleSelection,
+  toggleSelection,
   type FloorPlan,
   type PlanBackdrop,
   type PlanDefaults,
   type PlanSelection,
+  type PlanSelectionRef,
   type PlanTool,
   type PlanViewMode,
   type WallDrawMode,
   type Vec2
 } from "@/src/domain/planner/types";
+import { elementsInRect, mergeSelection } from "@/src/lib/planner/selection";
+import { isCardinalAngle, snapRotationAngle } from "@/src/lib/planner/rotation";
 import { computeCameraCoverage, type CameraCoverage } from "@/src/lib/planner/coverage";
 import {
   collectOccluders,
   collectRightAngleCorners,
   distance,
   projectPointToWall,
+  rectFromPoints,
   snapPoint
 } from "@/src/lib/planner/geometry";
 import {
@@ -27,8 +34,11 @@ import {
   buildCoverageMesh,
   buildDoorMesh,
   buildFloorFootprintGuide,
+  buildOverallDimensionGuide,
   buildFloorSlab,
   buildObstacleMesh,
+  buildObstacleRotateHandle,
+  buildMarqueeRect,
   buildPreviewLine,
   buildPreviewRect,
   buildRightAngleMarker,
@@ -52,28 +62,37 @@ type Bundle = {
   topControls: OrbitControls;
   orbitControls: OrbitControls;
   groups: Record<"content" | "coverage" | "cameras" | "backdrop" | "preview" | "placement" | "reference", THREE_NS.Group>;
+  ground: THREE_NS.Mesh;
+  fineGrid: THREE_NS.GridHelper;
+  majorGrid: THREE_NS.GridHelper;
   raycaster: THREE_NS.Raycaster;
   groundPlane: THREE_NS.Plane;
   sceneGeneration: number;
   frame: number;
 };
 
-function configureControlBindings(bundle: Bundle, tool: PlanTool) {
+function configureControlBindings(bundle: Bundle) {
   const { THREE, topControls, orbitControls } = bundle;
-  const drawing = tool !== "select";
   topControls.enableZoom = true;
   topControls.enablePan = true;
   topControls.enableRotate = false;
+  /*
+   * The left button always belongs to the tools in the plan view: it draws, or in select
+   * mode it rubber-bands. Panning moved to the right button, which is why the canvas
+   * suppresses the browser context menu.
+   */
   topControls.mouseButtons = {
-    LEFT: drawing ? null : THREE.MOUSE.PAN,
+    LEFT: null,
     MIDDLE: THREE.MOUSE.PAN,
     RIGHT: THREE.MOUSE.PAN
   };
   orbitControls.enableZoom = true;
   orbitControls.enablePan = true;
   orbitControls.enableRotate = true;
+  // Orbiting still needs a drag, and a marquee over a perspective view is meaningless,
+  // so the 3D view keeps the left button for rotation.
   orbitControls.mouseButtons = {
-    LEFT: drawing ? null : THREE.MOUSE.ROTATE,
+    LEFT: THREE.MOUSE.ROTATE,
     MIDDLE: THREE.MOUSE.ROTATE,
     RIGHT: THREE.MOUSE.PAN
   };
@@ -94,19 +113,51 @@ function configureViewMode(
   }
 
   const floors = props.buildingFloors?.length ? props.buildingFloors : [props.floor];
-  const totalHeight = props.viewMode === "building"
-    ? Math.max(...floors.map((item) => item.elevationM + item.heightM), 3.2)
+  const minElevation = props.viewMode === "building"
+    ? Math.min(...floors.map((item) => item.elevationM), 0)
     : 0;
-  orbitControls.target.set(topControls.target.x, totalHeight * 0.45, topControls.target.z);
-  const radius = props.viewMode === "building" ? Math.max(28, totalHeight * 3.2) : 24;
+  const maxElevation = props.viewMode === "building"
+    ? Math.max(...floors.map((item) => item.elevationM + item.heightM))
+    : 0;
+  const verticalSpan = Math.max(maxElevation - minElevation, 3.2);
+  const targetY = props.viewMode === "building" ? (minElevation + maxElevation) / 2 : 0;
+  orbitControls.target.set(topControls.target.x, targetY, topControls.target.z);
+  const radius = props.viewMode === "building" ? Math.max(28, verticalSpan * 2.25) : 24;
   orbitCamera.position.set(
     topControls.target.x + radius * 0.72,
-    totalHeight * 0.55 + radius * 0.62,
+    targetY + radius * 0.62,
     topControls.target.z + radius * 0.72
   );
   orbitControls.enabled = true;
   topControls.enabled = false;
   orbitControls.update();
+}
+
+function configureGroundSurface(
+  bundle: Bundle,
+  props: Pick<PlanCanvasProps, "viewMode" | "buildingFloors" | "focusedFloorId">
+) {
+  const groundMaterial = bundle.ground.material as THREE_NS.MeshStandardMaterial;
+  const fineMaterial = bundle.fineGrid.material as THREE_NS.Material & { opacity: number };
+  const majorMaterial = bundle.majorGrid.material as THREE_NS.Material & { opacity: number };
+  const floors = props.buildingFloors ?? [];
+  const hasBasement = floors.some((item) => item.elevationM < -0.01);
+  const focusedFloor = props.focusedFloorId
+    ? floors.find((item) => item.id === props.focusedFloorId)
+    : null;
+  const revealingBasements = props.viewMode === "building"
+    && hasBasement
+    && (!props.focusedFloorId || (focusedFloor?.elevationM ?? 0) < -0.01);
+  const showingBuildingWithBasement = props.viewMode === "building" && hasBasement;
+
+  groundMaterial.transparent = showingBuildingWithBasement;
+  groundMaterial.opacity = revealingBasements ? 0.045 : showingBuildingWithBasement ? 0.16 : 1;
+  groundMaterial.depthWrite = !showingBuildingWithBasement;
+  groundMaterial.needsUpdate = true;
+  fineMaterial.opacity = revealingBasements ? 0.12 : showingBuildingWithBasement ? 0.28 : 0.82;
+  majorMaterial.opacity = revealingBasements ? 0.2 : showingBuildingWithBasement ? 0.38 : 0.68;
+  fineMaterial.needsUpdate = true;
+  majorMaterial.needsUpdate = true;
 }
 
 export type PlanCanvasProps = {
@@ -127,6 +178,7 @@ export type PlanCanvasProps = {
   onFloorChange: (floor: FloorPlan) => void;
   onHint: (hint: string | null) => void;
   onDropCamera?: (definitionId: string, position: Vec2) => void;
+  onDropPreset?: (presetId: string, position: Vec2) => void;
   onPlaceBackdrop?: (center: Vec2) => void;
   onCancelBackdropPlacement?: () => void;
 };
@@ -135,7 +187,12 @@ type DragState =
   | { kind: "move-camera"; id: string }
   | { kind: "move-obstacle"; id: string }
   | { kind: "yaw"; id: string }
+  | { kind: "rotate-obstacle"; id: string }
+  | { kind: "marquee"; start: Vec2; additive: boolean }
   | null;
+
+/** Below this the drag reads as a click, so an empty-space click still clears selection. */
+const MARQUEE_MIN_SPAN_M = 0.25;
 
 const nextId = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e4).toString(36)}`;
 
@@ -289,6 +346,7 @@ export function PlanCanvas(props: PlanCanvasProps) {
 
       const bundle: Bundle = {
         THREE, renderer, scene, topCamera, orbitCamera, topControls, orbitControls, groups,
+        ground, fineGrid, majorGrid,
         raycaster: new THREE.Raycaster(),
         groundPlane: new THREE.Plane(new THREE.Vector3(0, 1, 0), 0),
         sceneGeneration: 0,
@@ -298,7 +356,7 @@ export function PlanCanvas(props: PlanCanvasProps) {
       // The async Three.js import can finish after the React view/tool effects have
       // already run. Configure the newly-created controls here as well, otherwise a
       // remount in orbit/building mode leaves OrbitControls disabled.
-      configureControlBindings(bundle, latest.current.tool);
+      configureControlBindings(bundle);
       configureViewMode(bundle, latest.current);
 
       const activeCamera = () => (latest.current.viewMode === "top" ? topCamera : orbitCamera);
@@ -334,7 +392,11 @@ export function PlanCanvas(props: PlanCanvasProps) {
         groups.backdrop.visible = false;
         ensureBackdropPlacement(bundle, latest.current.pendingBackdrop);
       }
-      renderLabels(labelHostRef.current, collectDimensionLabels(latest.current.floor));
+      const initialSelection = soleSelection(latest.current.selection);
+      renderLabels(labelHostRef.current, collectDimensionLabels(
+        latest.current.floor,
+        initialSelection?.kind === "wall" ? initialSelection.id : undefined
+      ));
     })();
 
     return () => {
@@ -358,7 +420,11 @@ export function PlanCanvas(props: PlanCanvasProps) {
     const bundle = bundleRef.current;
     if (!bundle) return;
     syncScene(bundle, { floor, selection, viewMode, buildingFloors, focusedFloorId, referenceFloor }, coverages);
-    renderLabels(labelHostRef.current, viewMode === "building" ? [] : collectDimensionLabels(floor));
+    const selected = soleSelection(selection);
+    renderLabels(labelHostRef.current, viewMode === "building" ? [] : collectDimensionLabels(
+      floor,
+      selected?.kind === "wall" ? selected.id : undefined
+    ));
   }, [floor, selection, coverages, buildingFloors, focusedFloorId, referenceFloor, viewMode]);
 
   useEffect(() => {
@@ -378,12 +444,12 @@ export function PlanCanvas(props: PlanCanvasProps) {
     const bundle = bundleRef.current;
     if (!bundle) return;
     configureViewMode(bundle, latest.current);
-  }, [viewMode]);
+  }, [viewMode, buildingFloors]);
 
   useEffect(() => {
     const bundle = bundleRef.current;
     if (!bundle) return;
-    configureControlBindings(bundle, tool);
+    configureControlBindings(bundle);
   }, [tool]);
 
   /* ── Pointer helpers ─────────────────────────────────────────────── */
@@ -431,17 +497,34 @@ export function PlanCanvas(props: PlanCanvasProps) {
     else bundle.orbitControls.enabled = enabled;
   }, []);
 
-  const handleCameraDrop = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+  const handleCanvasDrop = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    const current = latest.current;
+    if (current.readOnly) return;
+
+    // Presets are checked first: their payload type is distinct, and a preset drag must
+    // never be mistaken for a camera by falling through to the text/plain fallback.
+    const presetId = event.dataTransfer.getData("application/x-hamyar-preset");
+    if (presetId && current.onDropPreset) {
+      event.preventDefault();
+      const point = planPointAt(event.clientX, event.clientY);
+      if (!point) {
+        current.onHint("محل رها کردن روی نقشه معتبر نیست");
+        return;
+      }
+      current.onDropPreset(presetId, snapPoint(point, current.snapM));
+      return;
+    }
+
     const definitionId = event.dataTransfer.getData("application/x-hamyar-camera")
       || event.dataTransfer.getData("text/plain");
-    if (!definitionId || !latest.current.onDropCamera || latest.current.readOnly) return;
+    if (!definitionId || !current.onDropCamera) return;
     event.preventDefault();
     const point = planPointAt(event.clientX, event.clientY);
     if (!point) {
-      latest.current.onHint("محل رها کردن دوربین روی نقشه معتبر نیست");
+      current.onHint("محل رها کردن دوربین روی نقشه معتبر نیست");
       return;
     }
-    latest.current.onDropCamera(definitionId, snapPoint(point, latest.current.snapM));
+    current.onDropCamera(definitionId, snapPoint(point, current.snapM));
   }, [planPointAt]);
 
   /* ── Interaction ─────────────────────────────────────────────────── */
@@ -469,17 +552,19 @@ export function PlanCanvas(props: PlanCanvasProps) {
     /*
      * Inspecting an existing object must not require leaving the active drawing tool.
      * A click on an object opens its properties whenever no two-click/chain operation is
-     * underway. The door tool intentionally keeps wall clicks for placing a new door.
+     * underway — except for the opening tools, which need wall clicks to place a door or
+     * window on the wall that was clicked.
      */
+    const openingTool = current.tool === "door" || current.tool === "window";
     if (
       current.tool !== "select"
       && !activeDraft
       && picked
-      && !(current.tool === "door" && picked.kind === "wall")
+      && !(openingTool && picked.kind === "wall")
     ) {
       const kind = picked.kind === "camera-yaw" ? "camera" : picked.kind;
       if (kind === "wall" || kind === "door" || kind === "obstacle" || kind === "camera") {
-        onSelect({ kind, id: picked.id });
+        onSelect([{ kind, id: picked.id }]);
         onHint("مشخصات آیتم در پنل سمت راست باز شد؛ برای ادامه طراحی روی فضای خالی کلیک کنید");
         return;
       }
@@ -495,9 +580,42 @@ export function PlanCanvas(props: PlanCanvasProps) {
         return;
       }
 
-      onSelect(picked && picked.kind !== "camera-yaw" ? { kind: picked.kind, id: picked.id } as PlanSelection : null);
+      if (picked?.kind === "obstacle-rotate") {
+        dragRef.current = { kind: "rotate-obstacle", id: picked.id };
+        setControlsEnabled(false);
+        (event.target as HTMLElement).setPointerCapture?.(event.pointerId);
+        onHint("بکشید تا جهت این عنصر تغییر کند");
+        return;
+      }
 
-      if (picked?.kind === "camera" || picked?.kind === "obstacle") {
+      const additive = event.shiftKey || event.ctrlKey || event.metaKey;
+
+      if (!picked) {
+        // Empty space: begin a rubber band. It only becomes a selection once the drag
+        // covers real ground, so a plain click still means "clear".
+        if (current.viewMode === "top") {
+          dragRef.current = { kind: "marquee", start: point, additive };
+          setControlsEnabled(false);
+          (event.target as HTMLElement).setPointerCapture?.(event.pointerId);
+          onHint("بکشید تا آیتم‌های داخل کادر انتخاب شوند");
+        }
+        if (!additive) onSelect([]);
+        return;
+      }
+
+      const ref = { kind: picked.kind, id: picked.id } as PlanSelectionRef;
+      const alreadySelected = isSelected(current.selection, ref.kind, ref.id);
+
+      if (additive) {
+        onSelect(toggleSelection(current.selection, ref));
+        return;
+      }
+
+      // Dragging one of several selected items keeps the group, so a multi-selection can
+      // be nudged without collapsing back to a single element.
+      if (!alreadySelected) onSelect([ref]);
+
+      if (picked.kind === "camera" || picked.kind === "obstacle") {
         dragRef.current = { kind: picked.kind === "camera" ? "move-camera" : "move-obstacle", id: picked.id };
         setControlsEnabled(false);
         (event.target as HTMLElement).setPointerCapture?.(event.pointerId);
@@ -505,41 +623,57 @@ export function PlanCanvas(props: PlanCanvasProps) {
       return;
     }
 
-    if (current.tool === "door") {
+    if (current.tool === "door" || current.tool === "window") {
+      const isWindow = current.tool === "window";
+      const noun = isWindow ? "پنجره" : "در";
       const wall = picked?.kind === "wall"
         ? current.floor.walls.find((item) => item.id === picked.id)
         : undefined;
       if (!wall) {
-        onHint("برای افزودن در، مستقیماً روی یک دیوار کلیک کنید");
+        onHint(`برای افزودن ${noun}، مستقیماً روی یک دیوار کلیک کنید`);
         return;
       }
       const wallLengthM = distance(wall.a, wall.b);
       if (wallLengthM < 0.7) {
-        onHint("طول این دیوار برای افزودن در کافی نیست");
+        onHint(`طول این دیوار برای افزودن ${noun} کافی نیست`);
         return;
       }
-      const widthM = Math.min(0.9, Math.max(0.6, wallLengthM - 0.2));
+      const widthM = isWindow
+        ? Math.min(1.4, Math.max(0.6, wallLengthM - 0.2))
+        : Math.min(0.9, Math.max(0.6, wallLengthM - 0.2));
       const projection = projectPointToWall(point, wall, widthM / 2 + 0.1);
-      const overlapsDoor = (current.floor.doors ?? []).some((door) =>
+      // Openings share one list, so a new window must clear existing doors as well.
+      const overlaps = (current.floor.doors ?? []).some((door) =>
         door.wallId === wall.id
         && Math.abs((door.offset - projection.offset) * wallLengthM) < (door.widthM + widthM) / 2 + 0.1
       );
-      if (overlapsDoor) {
-        onHint("این قسمت از دیوار قبلاً در دارد؛ نقطه دیگری را انتخاب کنید");
+      if (overlaps) {
+        onHint("این قسمت از دیوار قبلاً بازشو دارد؛ نقطه دیگری را انتخاب کنید");
         return;
       }
+
+      const sillHeightM = isWindow ? Math.min(1, Math.max(0.4, wall.heightM * 0.3)) : 0;
+      const heightM = isWindow
+        ? Math.max(0.5, Math.min(1.4, wall.heightM - sillHeightM - 0.3))
+        : Math.min(2.1, wall.heightM - 0.1);
       const door = {
-        id: nextId("door"),
+        id: nextId(isWindow ? "win" : "door"),
         wallId: wall.id,
+        type: isWindow ? ("window" as const) : ("door" as const),
         offset: projection.offset,
         widthM,
-        heightM: Math.min(2.1, wall.heightM - 0.1),
+        heightM,
+        sillHeightM,
         hinge: "start" as const,
-        openAngleDeg: 45
+        openAngleDeg: isWindow ? 0 : 45,
+        // Glass bounds the room without blocking the view through it.
+        blocksView: !isWindow
       };
       onFloorChange({ ...current.floor, doors: [...(current.floor.doors ?? []), door] });
-      onSelect({ kind: "door", id: door.id });
-      onHint("در روی دیوار قرار گرفت؛ جهت بازشو و ابعاد را از پنل مشخصات تنظیم کنید");
+      onSelect([{ kind: "door", id: door.id }]);
+      onHint(isWindow
+        ? "پنجره روی دیوار قرار گرفت؛ ارتفاع کف و ابعاد از پنل مشخصات قابل تنظیم است"
+        : "در روی دیوار قرار گرفت؛ جهت بازشو و ابعاد را از پنل مشخصات تنظیم کنید");
       return;
     }
 
@@ -553,24 +687,27 @@ export function PlanCanvas(props: PlanCanvasProps) {
         optics: { ...defaultCameraOptics, mountHeightM: current.defaults.cameraMountHeightM }
       };
       onFloorChange({ ...current.floor, cameras: [...current.floor.cameras, camera] });
-      onSelect({ kind: "camera", id: camera.id });
+      onSelect([{ kind: "camera", id: camera.id }]);
       return;
     }
 
     const draft = draftRef.current;
     if (!draft) {
-      onSelect(null);
+      onSelect([]);
       draftRef.current = { kind: current.tool as "wall" | "obstacle" | "measure", start: snapped };
       onHint(current.tool === "wall"
         ? current.wallDrawMode === "line"
           ? "نقطه پایان دیوار خطی را انتخاب کنید — Esc برای لغو"
-          : "گوشه مقابل مستطیل را انتخاب کنید — Esc برای لغو"
+          : current.wallDrawMode === "glass"
+            ? "نقطه پایان جدار شیشه‌ای را انتخاب کنید — Esc برای لغو"
+            : "گوشه مقابل مستطیل را انتخاب کنید — Esc برای لغو"
         : "نقطه مقابل را بزنید");
       return;
     }
 
     if (draft.kind === "wall") {
-      if (current.wallDrawMode === "line") {
+      const isGlass = current.wallDrawMode === "glass";
+      if (current.wallDrawMode === "line" || isGlass) {
         const lengthM = distance(draft.start, snapped);
         if (lengthM >= 0.1) {
           onFloorChange({
@@ -580,11 +717,14 @@ export function PlanCanvas(props: PlanCanvasProps) {
               a: draft.start,
               b: snapped,
               heightM: current.defaults.wallHeightM,
-              thicknessM: current.defaults.wallThicknessM,
-              blocksView: true
+              // Glazing is thinner than masonry and, crucially, is not an occluder.
+              thicknessM: isGlass ? Math.min(0.08, current.defaults.wallThicknessM) : current.defaults.wallThicknessM,
+              blocksView: !isGlass
             }]
           });
-          onHint(`دیوار خطی به طول ${lengthM.toFixed(2)} متر رسم شد`);
+          onHint(isGlass
+            ? `جدار شیشه‌ای به طول ${lengthM.toFixed(2)} متر رسم شد — دید دوربین از آن عبور می‌کند`
+            : `دیوار خطی به طول ${lengthM.toFixed(2)} متر رسم شد`);
         } else {
           onHint("طول دیوار باید حداقل ۱۰ سانتی‌متر باشد");
         }
@@ -641,7 +781,7 @@ export function PlanCanvas(props: PlanCanvasProps) {
           widthM, depthM, heightM: current.defaults.obstacleHeightM, rotationDeg: 0, blocksView: true
         };
         onFloorChange({ ...current.floor, obstacles: [...current.floor.obstacles, obstacle] });
-        onSelect({ kind: "obstacle", id: obstacle.id });
+        onSelect([{ kind: "obstacle", id: obstacle.id }]);
       }
       draftRef.current = null;
       onHint(null);
@@ -669,16 +809,50 @@ export function PlanCanvas(props: PlanCanvasProps) {
 
     const drag = dragRef.current;
     if (drag) {
+      if (drag.kind === "marquee") {
+        const rect = rectFromPoints(drag.start, point);
+        disposeGroup(bundle.groups.preview);
+        bundle.groups.preview.add(buildMarqueeRect(bundle.THREE, drag.start, point));
+        const hits = elementsInRect(current.floor, rect);
+        onHint(hits.length
+          ? `${hits.length} آیتم داخل کادر`
+          : "کادر را روی آیتم‌های موردنظر بکشید");
+        return;
+      }
+
+      if (drag.kind === "rotate-obstacle") {
+        const obstacle = current.floor.obstacles.find((item) => item.id === drag.id);
+        if (!obstacle) return;
+        // Plan-space angles run clockwise from +x, while the mesh rotation is negated,
+        // so the pointer bearing is flipped back here to keep the arrow under the cursor.
+        const bearing = Math.atan2(point.z - obstacle.center.z, point.x - obstacle.center.x);
+        const rawDeg = (-(bearing * 180) / Math.PI + 360) % 360;
+        // The four architectural axes have a 3° magnetic target; Shift keeps the wider
+        // 15° stepping available for other deliberate alignments.
+        const rotationDeg = snapRotationAngle(rawDeg, event.shiftKey);
+        onFloorChange({
+          ...current.floor,
+          obstacles: current.floor.obstacles.map((item) => item.id === drag.id ? { ...item, rotationDeg } : item)
+        });
+        onHint(isCardinalAngle(rotationDeg)
+          ? `زاویه: ${rotationDeg.toFixed(0)}° — قفل روی جهت قائم`
+          : `زاویه: ${rotationDeg.toFixed(0)}°${event.shiftKey ? " (پله ۱۵ درجه)" : " — Shift برای پله ۱۵ درجه"}`);
+        return;
+      }
+
       if (drag.kind === "yaw") {
         const camera = current.floor.cameras.find((item) => item.id === drag.id);
         if (!camera) return;
         // Point the camera wherever the pointer is, in whole degrees.
-        const yawDeg = Math.round((Math.atan2(point.z - camera.position.z, point.x - camera.position.x) * 180) / Math.PI);
+        const rawYawDeg = (Math.atan2(point.z - camera.position.z, point.x - camera.position.x) * 180) / Math.PI;
+        const yawDeg = snapRotationAngle(rawYawDeg, event.shiftKey);
         onFloorChange({
           ...current.floor,
-          cameras: current.floor.cameras.map((item) => item.id === drag.id ? { ...item, yawDeg: (yawDeg + 360) % 360 } : item)
+          cameras: current.floor.cameras.map((item) => item.id === drag.id ? { ...item, yawDeg } : item)
         });
-        onHint(`جهت دوربین: ${((yawDeg + 360) % 360).toFixed(0)}°`);
+        onHint(isCardinalAngle(yawDeg)
+          ? `جهت دوربین: ${yawDeg.toFixed(0)}° — قفل روی جهت قائم`
+          : `جهت دوربین: ${yawDeg.toFixed(0)}°${event.shiftKey ? " (پله ۱۵ درجه)" : ""}`);
         return;
       }
 
@@ -705,7 +879,7 @@ export function PlanCanvas(props: PlanCanvasProps) {
     }
 
     const snapped = snapPoint(point, current.snapM);
-    if (draft.kind === "obstacle" || (draft.kind === "wall" && current.wallDrawMode === "rectangle")) {
+    if (draft.kind === "obstacle" || (draft.kind === "wall" && latest.current.wallDrawMode === "rectangle")) {
       clearSmartGuideLabel(smartGuideLabelHostRef.current);
       bundle.groups.preview.add(buildPreviewRect(
         bundle.THREE,
@@ -729,11 +903,31 @@ export function PlanCanvas(props: PlanCanvasProps) {
     }
   }, [onFloorChange, onHint, planPointAt]);
 
-  const endDrag = useCallback(() => {
-    if (!dragRef.current) return;
+  const endDrag = useCallback((event?: React.PointerEvent<HTMLDivElement>) => {
+    const drag = dragRef.current;
+    if (!drag) return;
     dragRef.current = null;
     setControlsEnabled(true);
-  }, [setControlsEnabled]);
+
+    const bundle = bundleRef.current;
+    if (bundle) disposeGroup(bundle.groups.preview);
+    if (drag.kind !== "marquee") return;
+
+    const current = latest.current;
+    const end = event ? planPointAt(event.clientX, event.clientY) : null;
+    if (!end) { onHint(null); return; }
+
+    const rect = rectFromPoints(drag.start, end);
+    // A drag too small to be deliberate is treated as the click it probably was.
+    if (rect.maxX - rect.minX < MARQUEE_MIN_SPAN_M && rect.maxZ - rect.minZ < MARQUEE_MIN_SPAN_M) {
+      onHint(null);
+      return;
+    }
+
+    const hits = elementsInRect(current.floor, rect);
+    onSelect(drag.additive ? mergeSelection(current.selection, hits) : hits);
+    onHint(hits.length ? `${hits.length} آیتم انتخاب شد` : "آیتمی داخل کادر نبود");
+  }, [onHint, onSelect, planPointAt, setControlsEnabled]);
 
   const cancelDraft = useCallback(() => {
     draftRef.current = null;
@@ -756,13 +950,14 @@ export function PlanCanvas(props: PlanCanvasProps) {
       if (event.key === "Escape") cancelDraft();
       // Nudging yaw from the keyboard is far more precise than any drag.
       const current = latest.current;
-      if (current.selection?.kind !== "camera" || current.readOnly) return;
+      const soleCamera = soleSelection(current.selection);
+      if (soleCamera?.kind !== "camera" || current.readOnly) return;
       if (event.key !== "[" && event.key !== "]") return;
       const delta = event.key === "]" ? 5 : -5;
       onFloorChange({
         ...current.floor,
         cameras: current.floor.cameras.map((item) =>
-          item.id === current.selection!.id ? { ...item, yawDeg: (item.yawDeg + delta + 360) % 360 } : item)
+          item.id === soleCamera.id ? { ...item, yawDeg: (item.yawDeg + delta + 360) % 360 } : item)
       });
     };
     window.addEventListener("keydown", onKey);
@@ -775,11 +970,14 @@ export function PlanCanvas(props: PlanCanvasProps) {
         ref={hostRef}
         className={`plan-canvas tool-${readOnly ? "readonly" : tool}`}
         onDragOver={(event) => {
-          if (!latest.current.onDropCamera || !event.dataTransfer.types.includes("application/x-hamyar-camera")) return;
+          const types = event.dataTransfer.types;
+          const accepts = (latest.current.onDropCamera && types.includes("application/x-hamyar-camera"))
+            || (latest.current.onDropPreset && types.includes("application/x-hamyar-preset"));
+          if (!accepts) return;
           event.preventDefault();
           event.dataTransfer.dropEffect = "copy";
         }}
-        onDrop={handleCameraDrop}
+        onDrop={handleCanvasDrop}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={endDrag}
@@ -787,17 +985,11 @@ export function PlanCanvas(props: PlanCanvasProps) {
         onPointerLeave={endDrag}
         onAuxClick={(event) => { if (event.button === 1) event.preventDefault(); }}
         onContextMenu={(event) => {
-          if (latest.current.viewMode !== "top") {
-            event.preventDefault();
-            return;
-          }
-          if (latest.current.pendingBackdrop) {
-            event.preventDefault();
-            latest.current.onCancelBackdropPlacement?.();
-          } else if (draftRef.current) {
-            event.preventDefault();
-            cancelDraft();
-          }
+          // Always suppressed: the right button is the pan gesture, and a browser menu
+          // appearing mid-drag would abandon it.
+          event.preventDefault();
+          if (latest.current.pendingBackdrop) latest.current.onCancelBackdropPlacement?.();
+          else if (draftRef.current) cancelDraft();
         }}
       />
       <div ref={labelHostRef} className="plan-dimension-layer" aria-hidden="true" />
@@ -823,38 +1015,48 @@ function syncScene(
   disposeGroup(groups.backdrop);
   disposeGroup(groups.reference);
 
-  if (viewMode === "building" && buildingFloors?.length) {
+  if (viewMode === "building" && buildingFloors) {
+    configureGroundSurface(bundle, { viewMode, buildingFloors, focusedFloorId });
+    const showingAllFloors = focusedFloorId === null;
     for (const stackedFloor of buildingFloors) {
-      const isFocused = !focusedFloorId || stackedFloor.id === focusedFloorId;
-      const opacity = focusedFloorId ? (isFocused ? 1 : 0.16) : 0.82;
+      const isFocused = Boolean(focusedFloorId && stackedFloor.id === focusedFloorId);
+      const opacity = isFocused ? 1 : (showingAllFloors ? 0.52 : 0.075);
       const floorGroup = new THREE.Group();
       floorGroup.position.y = stackedFloor.elevationM;
       floorGroup.userData = { kind: "building-floor", floorId: stackedFloor.id, floorOpacity: opacity };
       floorGroup.add(buildFloorSlab(THREE, stackedFloor, isFocused));
-      for (const wall of stackedFloor.walls) {
+      // Keep the envelope legible without rebuilding the old "stack of combs" effect.
+      // In the all-floor view, furniture and equipment remain visible while the hundreds
+      // of shop partitions stay collapsed to each level's architectural shell.
+      const visibleWalls = isFocused
+        ? stackedFloor.walls
+        : stackedFloor.walls.filter((wall) => /(?:shell|envelope|estate|yard)-/.test(wall.id));
+      for (const wall of visibleWalls) {
         const doors = (stackedFloor.doors ?? []).filter((door) => door.wallId === wall.id);
-        floorGroup.add(buildWallWithDoors(THREE, wall, doors, false));
+        floorGroup.add(buildWallWithDoors(THREE, wall, isFocused ? doors : [], false));
       }
-      for (const obstacle of stackedFloor.obstacles) {
-        floorGroup.add(buildObstacleMesh(THREE, obstacle, false, {
-          floorId: stackedFloor.id,
-          sceneGeneration
-        }));
-      }
-      for (const door of stackedFloor.doors ?? []) {
-        const wall = stackedFloor.walls.find((item) => item.id === door.wallId);
-        if (wall) floorGroup.add(buildDoorMesh(THREE, door, wall, false));
-      }
-      for (const camera of stackedFloor.cameras) {
-        floorGroup.add(buildCameraMarker(
-          THREE,
-          camera.id,
-          camera.position,
-          camera.optics.mountHeightM,
-          camera.yawDeg,
-          false,
-          camera.housing
-        ));
+      if (isFocused || showingAllFloors) {
+        for (const obstacle of stackedFloor.obstacles) {
+          floorGroup.add(buildObstacleMesh(THREE, obstacle, false, {
+            floorId: stackedFloor.id,
+            sceneGeneration
+          }));
+        }
+        for (const door of stackedFloor.doors ?? []) {
+          const wall = stackedFloor.walls.find((item) => item.id === door.wallId);
+          if (wall) floorGroup.add(buildDoorMesh(THREE, door, wall, false));
+        }
+        for (const camera of stackedFloor.cameras) {
+          floorGroup.add(buildCameraMarker(
+            THREE,
+            camera.id,
+            camera.position,
+            camera.optics.mountHeightM,
+            camera.yawDeg,
+            false,
+            camera.housing
+          ));
+        }
       }
       applyObjectOpacity(floorGroup, opacity);
       groups.content.add(floorGroup);
@@ -862,42 +1064,51 @@ function syncScene(
     return;
   }
 
+  configureGroundSurface(bundle, { viewMode, buildingFloors, focusedFloorId });
+
   if (referenceFloor) groups.reference.add(buildFloorFootprintGuide(THREE, referenceFloor));
 
   const backdrop = buildBackdrop(THREE, floor);
   if (backdrop) groups.backdrop.add(backdrop);
+  groups.content.add(buildOverallDimensionGuide(THREE, floor));
 
   for (const wall of floor.walls) {
     const doors = (floor.doors ?? []).filter((door) => door.wallId === wall.id);
-    groups.content.add(buildWallWithDoors(THREE, wall, doors, selection?.kind === "wall" && selection.id === wall.id));
+    groups.content.add(buildWallWithDoors(THREE, wall, doors, isSelected(selection, "wall", wall.id)));
   }
   for (const corner of collectRightAngleCorners(floor.walls)) {
     groups.content.add(buildRightAngleMarker(THREE, corner));
   }
   for (const obstacle of floor.obstacles) {
+    const obstacleSelected = isSelected(selection, "obstacle", obstacle.id);
+    // Only the sole selection gets a handle: a marquee over twenty items should not
+    // scatter twenty overlapping arrows across the plan.
+    if (obstacleSelected && selection.length === 1) {
+      groups.content.add(buildObstacleRotateHandle(THREE, obstacle));
+    }
     groups.content.add(buildObstacleMesh(
       THREE,
       obstacle,
-      selection?.kind === "obstacle" && selection.id === obstacle.id,
+      obstacleSelected,
       { floorId: floor.id, sceneGeneration }
     ));
   }
   for (const door of floor.doors ?? []) {
     const wall = floor.walls.find((item) => item.id === door.wallId);
-    if (wall) groups.content.add(buildDoorMesh(THREE, door, wall, selection?.kind === "door" && selection.id === door.id));
+    if (wall) groups.content.add(buildDoorMesh(THREE, door, wall, isSelected(selection, "door", door.id)));
   }
   for (const camera of floor.cameras) {
-    const isSelected = selection?.kind === "camera" && selection.id === camera.id;
+    const cameraSelected = isSelected(selection, "camera", camera.id);
     groups.cameras.add(buildCameraMarker(
       THREE,
       camera.id,
       camera.position,
       camera.optics.mountHeightM,
       camera.yawDeg,
-      isSelected,
+      cameraSelected,
       camera.housing
     ));
-    if (isSelected) groups.cameras.add(buildYawHandle(THREE, camera.id, camera.position, camera.optics.mountHeightM, camera.yawDeg));
+    if (cameraSelected) groups.cameras.add(buildYawHandle(THREE, camera.id, camera.position, camera.optics.mountHeightM, camera.yawDeg));
   }
   for (const coverage of coverages) {
     groups.coverage.add(buildCoverageMesh(THREE, coverage));
@@ -909,7 +1120,7 @@ function renderLabels(host: HTMLDivElement | null, labels: ReturnType<typeof col
   host.replaceChildren();
   for (const label of labels) {
     const node = document.createElement("span");
-    node.className = "plan-dimension";
+    node.className = `plan-dimension is-${label.kind}`;
     node.textContent = label.text;
     node.dataset.worldX = String(label.world.x);
     node.dataset.worldY = String(label.world.y);

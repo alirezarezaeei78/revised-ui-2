@@ -105,11 +105,19 @@ function FloorSvg({ floor, cameraProducts }: { floor: FloorPlan; cameraProducts:
             />
           ) : null}
 
-          {/* Widest band first so the tighter, higher-quality zones paint over it. */}
+          {/* Bands are disjoint rings, so each is drawn once at full strength. */}
           {coverage.cameras.map((item) =>
-            [...item.bands].reverse().map((band) =>
+            item.bands.map((band) =>
               band.polygon.length >= 3 ? (
-                <path key={`${item.cameraId}-${band.key}`} d={toPath(band.polygon)} fill={band.color} fillOpacity={0.18} stroke="none" />
+                <path
+                  key={`${item.cameraId}-${band.key}`}
+                  d={toPath(band.polygon)}
+                  fill={band.color}
+                  fillOpacity={0.5}
+                  stroke={band.color}
+                  strokeOpacity={0.9}
+                  strokeWidth={0.05}
+                />
               ) : null
             )
           )}

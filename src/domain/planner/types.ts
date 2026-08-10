@@ -1,4 +1,4 @@
-import type { CameraHousing, SurveillanceTask } from "@/src/domain/catalog/types";
+import type { CameraHousing, CameraStreamConfig, SurveillanceTask } from "@/src/domain/catalog/types";
 
 /**
  * Floor plan model for the site designer.
@@ -23,19 +23,50 @@ export type PlanWall = {
   blocksView: boolean;
 };
 
+/**
+ * An opening cut into a wall.
+ *
+ * Doors and windows share this shape because they share everything that matters here:
+ * they attach to a wall, move with it, and are deleted with it. `sillHeightM` is what
+ * separates them — a window starts above the floor, which is also why it does not break
+ * a camera's sight line the way an open doorway does.
+ */
+export type PlanOpeningType = "door" | "window";
+
 export type PlanDoor = {
   id: string;
   wallId: string;
-  /** Normalised distance of the door centre from wall.a toward wall.b. */
+  type?: PlanOpeningType;
+  /** Normalised distance of the opening's centre from wall.a toward wall.b. */
   offset: number;
   widthM: number;
   heightM: number;
+  /** Height of the opening's lower edge above the floor; 0 for a door. */
+  sillHeightM?: number;
   hinge: "start" | "end";
-  /** Visual opening angle; 0 is closed and 90 is fully open. */
+  /** Visual opening angle; 0 is closed and 90 is fully open. Doors only. */
   openAngleDeg: number;
+  /** Glazed openings bound the space without blocking the view through it. */
+  blocksView?: boolean;
 };
 
-export type ObstacleKind = "block" | "pillar" | "shelf" | "vehicle" | "counter" | "tree" | "stairs";
+export type ObstacleKind =
+  | "block"
+  | "pillar"
+  | "shelf"
+  | "vehicle"
+  | "counter"
+  | "tree"
+  | "stairs"
+  | "surface"
+  | "fence"
+  | "gate"
+  | "pole"
+  | "equipment"
+  | "furniture"
+  | "appliance"
+  | "seating"
+  | "bed";
 
 export type ObstacleVariant =
   | "sedan"
@@ -46,7 +77,93 @@ export type ObstacleVariant =
   | "deciduous"
   | "conifer"
   | "palm"
-  | "stairs-straight";
+  | "stairs-straight"
+  | "elevator"
+  | "escalator"
+  | "grass"
+  | "road"
+  | "bush"
+  | "hedge"
+  | "fence-mesh"
+  | "fence-wall"
+  | "gate-sliding"
+  | "camera-pole"
+  | "light-pole"
+  | "equipment-rack"
+  // Living room
+  | "sofa-three"
+  | "sofa-single"
+  | "coffee-table"
+  | "tv-unit"
+  | "rug"
+  | "dining-table"
+  | "dining-chair"
+  // Bedroom
+  | "bed-double"
+  | "bed-single"
+  | "wardrobe"
+  | "bookshelf"
+  | "nightstand"
+  | "dresser"
+  // Kitchen
+  | "fridge"
+  | "kitchen-counter"
+  | "stove"
+  | "sink-unit"
+  | "kitchen-island"
+  | "dishwasher"
+  // Office
+  | "office-desk"
+  | "office-chair"
+  | "meeting-table"
+  | "filing-cabinet"
+  | "reception-desk"
+  | "partition-screen"
+  // Retail
+  | "shelving-unit"
+  | "display-fridge"
+  | "checkout-counter"
+  | "clothing-rack"
+  | "display-stand"
+  // Industrial workshop
+  | "workbench"
+  | "cnc-machine"
+  | "tool-cabinet"
+  | "welding-station"
+  | "conveyor"
+  // Warehouse and logistics
+  | "storage-rack"
+  | "pallet-stack"
+  | "crate-stack"
+  | "packing-table"
+  | "loading-platform"
+  // Parking and traffic
+  | "parking-barrier"
+  | "guard-booth"
+  | "bollard"
+  | "speed-bump"
+  | "wheel-stop"
+  // Hospitality and public spaces
+  | "lobby-sofa"
+  | "concierge-desk"
+  | "luggage-cart"
+  | "queue-barrier"
+  | "vending-machine"
+  | "hospital-bed"
+  | "stretcher"
+  | "exam-table"
+  | "nurse-station"
+  | "medical-cart"
+  | "privacy-screen"
+  | "service-counter"
+  | "waiting-bench"
+  | "locker-row"
+  | "metal-bunk"
+  | "student-desk"
+  | "whiteboard"
+  | "lab-bench"
+  | "library-shelf"
+  | "gym-bleacher";
 
 export type PlanObstacle = {
   id: string;
@@ -82,17 +199,28 @@ export type PlanCameraOptics = {
 export type PlanCamera = {
   id: string;
   name: string;
-  /** Fixed wizard inventory slot used to prevent arbitrary camera creation. */
+  /**
+   * Device type this placement was created from.
+   *
+   * Unlike the old `definitionId`, a template is reusable: dropping the same type ten
+   * times produces ten independent cameras. Editing a placement never writes back to the
+   * template, so a one-off lens change stays local to that position.
+   */
+  templateId?: string;
+  /** Legacy single-use inventory slot, retained so saved projects still load. */
   definitionId?: string;
   /** Links the placement back to a wizard zone so counts and goals stay in sync. */
   zoneId?: string;
   groupName?: string;
   housing?: CameraHousing;
+  outdoor?: boolean;
   features?: {
     microphone: boolean;
     colorNightVision: boolean;
     weatherproof: boolean;
   };
+  /** Encoder settings; filled in on the per-camera detail step. */
+  stream?: CameraStreamConfig;
   position: Vec2;
   yawDeg: number;
   goal: SurveillanceTask;
@@ -160,16 +288,46 @@ export type PlanDefaults = {
   cameraMountHeightM: number;
 };
 
-export type PlanTool = "select" | "wall" | "door" | "obstacle" | "camera" | "measure";
+export type PlanTool = "select" | "wall" | "door" | "window" | "obstacle" | "camera" | "measure";
 export type PlanViewMode = "top" | "orbit" | "building";
-export type WallDrawMode = "line" | "rectangle";
+/**
+ * How the wall tool draws.
+ *
+ * `glass` is a line partition that does not block the view — the see-through boundary a
+ * shopfront or an internal glazed screen makes. It is a separate draw mode rather than a
+ * checkbox so a transparent wall is a deliberate choice at the moment of drawing.
+ */
+export type WallDrawMode = "line" | "rectangle" | "glass";
 
-export type PlanSelection =
-  | { kind: "wall"; id: string }
-  | { kind: "door"; id: string }
-  | { kind: "obstacle"; id: string }
-  | { kind: "camera"; id: string }
-  | null;
+export type PlanElementKind = "wall" | "door" | "obstacle" | "camera";
+
+export type PlanSelectionRef = { kind: PlanElementKind; id: string };
+
+/**
+ * Current selection, as a list.
+ *
+ * An array rather than a single reference because marquee dragging can pick up many
+ * elements at once: one entry drives the property editor, several switch the panel to
+ * bulk actions, and zero means nothing is selected.
+ */
+export type PlanSelection = PlanSelectionRef[];
+
+export const emptySelection: PlanSelection = [];
+
+export function isSelected(selection: PlanSelection, kind: PlanElementKind, id: string): boolean {
+  return selection.some((item) => item.kind === kind && item.id === id);
+}
+
+/** Single selected element, or null when the selection is empty or plural. */
+export function soleSelection(selection: PlanSelection): PlanSelectionRef | null {
+  return selection.length === 1 ? selection[0] : null;
+}
+
+export function toggleSelection(selection: PlanSelection, ref: PlanSelectionRef): PlanSelection {
+  return isSelected(selection, ref.kind, ref.id)
+    ? selection.filter((item) => !(item.kind === ref.kind && item.id === ref.id))
+    : [...selection, ref];
+}
 
 export const defaultCameraOptics: PlanCameraOptics = {
   megapixel: 4,
@@ -223,9 +381,14 @@ export function duplicateFloor(source: FloorPlan, name: string, index: number): 
     obstacles: source.obstacles.map((obstacle, order) => ({ ...obstacle, id: `obs-${stamp}-${order}`, center: { ...obstacle.center } })),
     cameras: source.cameras.map((camera, order) => ({
       ...camera,
+      // A duplicated floor keeps the *template* link — the type is still the same device —
+      // but drops the single-use definition id so both copies stay independently valid.
       id: `cam-${stamp}-${order}`,
+      definitionId: undefined,
       position: { ...camera.position },
-      optics: { ...camera.optics }
+      optics: { ...camera.optics },
+      features: camera.features ? { ...camera.features } : undefined,
+      stream: camera.stream ? { ...camera.stream } : undefined
     })),
     backdrop: source.backdrop ? { ...source.backdrop, originM: { ...source.backdrop.originM } } : undefined
   };

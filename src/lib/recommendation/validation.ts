@@ -1,4 +1,4 @@
-import type { ProjectBrief, ProjectCameraConfig, ProjectCameraUnit, ProjectZone, SurveillanceTask } from "@/src/domain/catalog/types";
+import type { CameraStreamConfig, ProjectBrief, ProjectCameraConfig, ProjectCameraUnit, ProjectZone, StreamQuality, SurveillanceTask, VideoCodec } from "@/src/domain/catalog/types";
 import { TASK_MINIMUM_PPM } from "@/src/lib/recommendation/camera-constraints";
 
 const projectTypes = ["shop", "office", "factory", "parking", "residential"];
@@ -171,6 +171,34 @@ function parseCameraConfig(value: unknown, zoneName: string): ProjectCameraConfi
     maxRangeM: requiredNumber(item.maxRangeM, 2, 300, `برد مؤثر دوربین گروه ${zoneName}`),
     microphone: Boolean(item.microphone),
     colorNightVision: Boolean(item.colorNightVision),
-    weatherproof: Boolean(item.weatherproof)
+    weatherproof: Boolean(item.weatherproof),
+    stream: parseStreamConfig(item.stream)
+  };
+}
+
+const videoCodecs: VideoCodec[] = ["H.264", "H.265", "H.265+"];
+const streamQualities: StreamQuality[] = ["standard", "high", "highest"];
+
+/**
+ * Encoder settings are advisory: the engine already has `measuredBitrateKbps` for
+ * capacity, so a malformed block is dropped rather than failing the whole request.
+ */
+function parseStreamConfig(value: unknown): CameraStreamConfig | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const item = value as Record<string, unknown>;
+  const codec = String(item.codec) as VideoCodec;
+  const quality = String(item.quality) as StreamQuality;
+  if (!videoCodecs.includes(codec) || !streamQualities.includes(quality)) return undefined;
+  const bitrateKbps = optionalNumber(item.bitrateKbps, 16, 100_000);
+  if (bitrateKbps === undefined) return undefined;
+  return {
+    codec,
+    quality,
+    bitrateKbps,
+    fps: optionalNumber(item.fps, 1, 120) ?? 25,
+    bitrateMode: item.bitrateMode === "CBR" ? "CBR" : "VBR",
+    audioEnabled: Boolean(item.audioEnabled),
+    recordingMode: item.recordingMode === "motion" ? "motion" : "continuous",
+    motionActivityPercent: optionalNumber(item.motionActivityPercent, 1, 100) ?? 40
   };
 }

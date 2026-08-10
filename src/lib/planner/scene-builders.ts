@@ -2,7 +2,8 @@ import type * as THREE_NS from "three";
 import type { CameraHousing } from "@/src/domain/catalog/types";
 import type { FloorPlan, ObstacleVariant, PlanBackdrop, PlanDoor, PlanObstacle, PlanWall, Vec2 } from "@/src/domain/planner/types";
 import type { CameraCoverage } from "@/src/lib/planner/coverage";
-import { largestClosedWallLoop, obstacleCorners, type RightAngleCorner } from "@/src/lib/planner/geometry";
+import { largestClosedWallLoop, type RightAngleCorner } from "@/src/lib/planner/geometry";
+import { isCardinalAngle } from "@/src/lib/planner/rotation";
 
 /**
  * Mesh construction for the plan scene.
@@ -135,13 +136,22 @@ export function buildWallWithDoors(
   for (const opening of openings) {
     const solid = wallSectionMesh(THREE, wall, cursorM, opening.startM, 0, wall.heightM, selected);
     if (solid) group.add(solid);
-    const lintelHeightM = Math.max(0, wall.heightM - opening.door.heightM);
+
+    // A window leaves masonry below it as well as above; a door only above.
+    const sillHeightM = opening.door.type === "window" ? Math.max(0, opening.door.sillHeightM ?? 0.9) : 0;
+    if (sillHeightM > 0.01) {
+      const apron = wallSectionMesh(THREE, wall, opening.startM, opening.endM, 0, sillHeightM, selected);
+      if (apron) group.add(apron);
+    }
+
+    const openingTopM = sillHeightM + opening.door.heightM;
+    const lintelHeightM = Math.max(0, wall.heightM - openingTopM);
     const lintel = wallSectionMesh(
       THREE,
       wall,
       opening.startM,
       opening.endM,
-      opening.door.heightM,
+      openingTopM,
       lintelHeightM,
       selected
     );
@@ -161,6 +171,7 @@ export function buildDoorMesh(
   wall: PlanWall,
   selected: boolean
 ): THREE_NS.Object3D {
+  if (door.type === "window") return buildWindowMesh(THREE, door, wall, selected);
   const group = new THREE.Group();
   const dx = wall.b.x - wall.a.x;
   const dz = wall.b.z - wall.a.z;
@@ -236,12 +247,142 @@ export function buildDoorMesh(
   return group;
 }
 
+/**
+ * Glazed opening: frame, mullion and a transparent pane sitting on its sill.
+ *
+ * Rendered separately from a door because there is no leaf to swing, and because glass
+ * is the point — the pane stays see-through so the plan reads the way the coverage
+ * engine treats it.
+ */
+function buildWindowMesh(
+  THREE: ThreeModule,
+  door: PlanDoor,
+  wall: PlanWall,
+  selected: boolean
+): THREE_NS.Object3D {
+  const group = new THREE.Group();
+  const dx = wall.b.x - wall.a.x;
+  const dz = wall.b.z - wall.a.z;
+  const span = Math.hypot(dx, dz) || 0.01;
+  const u = { x: dx / span, z: dz / span };
+  const center = { x: wall.a.x + dx * door.offset, z: wall.a.z + dz * door.offset };
+  const halfWidth = Math.min(door.widthM, span) / 2;
+  const sillHeightM = Math.max(0, door.sillHeightM ?? 0.9);
+  const rotationY = -Math.atan2(u.z, u.x);
+  const thickness = Math.max(0.08, wall.thicknessM * 0.7);
+
+  const frameMaterial = new THREE.MeshStandardMaterial({
+    color: selected ? 0xf59e0b : 0xe2e8f0,
+    roughness: 0.4,
+    metalness: 0.35
+  });
+  const glass = new THREE.MeshStandardMaterial({
+    color: 0xbfdcf0,
+    roughness: 0.08,
+    metalness: 0.1,
+    transparent: true,
+    opacity: 0.35
+  });
+
+  const place = (mesh: THREE_NS.Mesh, offsetAlong: number, height: number) => {
+    mesh.position.set(center.x + u.x * offsetAlong, height, center.z + u.z * offsetAlong);
+    mesh.rotation.y = rotationY;
+    group.add(mesh);
+  };
+
+  for (const sign of [-1, 1]) {
+    place(new THREE.Mesh(new THREE.BoxGeometry(0.07, door.heightM, thickness), frameMaterial), halfWidth * sign, sillHeightM + door.heightM / 2);
+  }
+  place(new THREE.Mesh(new THREE.BoxGeometry(door.widthM + 0.14, 0.09, thickness), frameMaterial), 0, sillHeightM + door.heightM + 0.045);
+  // Sill board projects slightly, which is what makes it read as a window in the 3D view.
+  place(new THREE.Mesh(new THREE.BoxGeometry(door.widthM + 0.18, 0.07, thickness * 1.35), frameMaterial), 0, sillHeightM - 0.035);
+  place(new THREE.Mesh(new THREE.BoxGeometry(0.05, door.heightM - 0.1, thickness * 0.8), frameMaterial), 0, sillHeightM + door.heightM / 2);
+  place(new THREE.Mesh(new THREE.BoxGeometry(door.widthM - 0.05, door.heightM - 0.1, 0.03), glass), 0, sillHeightM + door.heightM / 2);
+
+  group.userData = { kind: "door", id: door.id };
+  group.traverse((child) => { child.userData = { kind: "door", id: door.id }; });
+  return group;
+}
+
+/** Translucent rubber band drawn while a marquee drag is in progress. */
+export function buildMarqueeRect(THREE: ThreeModule, from: Vec2, to: Vec2): THREE_NS.Group {
+  const group = new THREE.Group();
+  const minX = Math.min(from.x, to.x);
+  const maxX = Math.max(from.x, to.x);
+  const minZ = Math.min(from.z, to.z);
+  const maxZ = Math.max(from.z, to.z);
+  const width = Math.max(1e-3, maxX - minX);
+  const depth = Math.max(1e-3, maxZ - minZ);
+
+  const fill = new THREE.Mesh(
+    new THREE.PlaneGeometry(width, depth),
+    new THREE.MeshBasicMaterial({ color: 0x1976b7, transparent: true, opacity: 0.16, depthWrite: false })
+  );
+  fill.rotation.x = -Math.PI / 2;
+  fill.position.set(minX + width / 2, 0.09, minZ + depth / 2);
+  fill.renderOrder = 20;
+  group.add(fill);
+
+  const border = new THREE.LineLoop(
+    new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(minX, 0.1, minZ),
+      new THREE.Vector3(maxX, 0.1, minZ),
+      new THREE.Vector3(maxX, 0.1, maxZ),
+      new THREE.Vector3(minX, 0.1, maxZ)
+    ]),
+    new THREE.LineBasicMaterial({ color: 0x0f5f99 })
+  );
+  border.renderOrder = 21;
+  group.add(border);
+  return group;
+}
+
 export function buildObstacleMesh(
   THREE: ThreeModule,
   obstacle: PlanObstacle,
   selected: boolean,
   renderScope?: ObstacleRenderScope
 ): THREE_NS.Object3D {
+  if (obstacle.kind === "surface") {
+    const surface = buildSurfaceObstacle(THREE, obstacle, selected);
+    if (renderScope) {
+      Object.assign(surface.userData, renderScope);
+      surface.traverse((child) => Object.assign(child.userData, renderScope));
+    }
+    return surface;
+  }
+  if (obstacle.kind === "fence" || obstacle.kind === "gate") {
+    const barrier = buildBarrierObstacle(THREE, obstacle, selected);
+    if (renderScope) {
+      Object.assign(barrier.userData, renderScope);
+      barrier.traverse((child) => Object.assign(child.userData, renderScope));
+    }
+    return barrier;
+  }
+  if (obstacle.kind === "pole") {
+    const pole = buildPoleObstacle(THREE, obstacle, selected);
+    if (renderScope) {
+      Object.assign(pole.userData, renderScope);
+      pole.traverse((child) => Object.assign(child.userData, renderScope));
+    }
+    return pole;
+  }
+  if (obstacle.kind === "furniture" || obstacle.kind === "appliance" || obstacle.kind === "seating" || obstacle.kind === "bed") {
+    const furniture = buildFurnitureObstacle(THREE, obstacle, selected);
+    if (renderScope) {
+      Object.assign(furniture.userData, renderScope);
+      furniture.traverse((child) => Object.assign(child.userData, renderScope));
+    }
+    return furniture;
+  }
+  if (obstacle.variant === "escalator") {
+    const escalator = buildEscalatorObstacle(THREE, obstacle, selected);
+    if (renderScope) {
+      Object.assign(escalator.userData, renderScope);
+      escalator.traverse((child) => Object.assign(child.userData, renderScope));
+    }
+    return escalator;
+  }
   if (obstacle.kind === "stairs") {
     const stairs = buildStairObstacle(THREE, obstacle, selected);
     if (renderScope) {
@@ -249,6 +390,14 @@ export function buildObstacleMesh(
       stairs.traverse((child) => Object.assign(child.userData, renderScope));
     }
     return stairs;
+  }
+  if (obstacle.variant === "elevator") {
+    const elevator = buildElevatorObstacle(THREE, obstacle, selected);
+    if (renderScope) {
+      Object.assign(elevator.userData, renderScope);
+      elevator.traverse((child) => Object.assign(child.userData, renderScope));
+    }
+    return elevator;
   }
   if (obstacle.kind === "vehicle" || obstacle.kind === "tree") {
     const group = obstacle.kind === "vehicle"
@@ -272,6 +421,412 @@ export function buildObstacleMesh(
   mesh.rotation.y = -(obstacle.rotationDeg * Math.PI) / 180;
   mesh.userData = { kind: "obstacle", id: obstacle.id, ...renderScope };
   return mesh;
+}
+
+const surfaceColors: Partial<Record<NonNullable<PlanObstacle["variant"]>, number>> = {
+  grass: 0x6aab54,
+  road: 0x6b7280
+};
+
+/** Base colour per furniture variant, chosen so a room reads without labels. */
+const furnitureColors: Partial<Record<NonNullable<PlanObstacle["variant"]>, number>> = {
+  "sofa-three": 0x5b7c99,
+  "sofa-single": 0x5b7c99,
+  "coffee-table": 0x8b5e3c,
+  "tv-unit": 0x6b4f3a,
+  "dining-table": 0x8b5e3c,
+  "dining-chair": 0x6b513d,
+  "bed-double": 0x7f9bb5,
+  "bed-single": 0x7f9bb5,
+  wardrobe: 0x9c6b46,
+  bookshelf: 0x8b5e3c,
+  nightstand: 0x9c6b46,
+  dresser: 0x9c6b46,
+  fridge: 0xd7dee4,
+  "kitchen-counter": 0xc9d2d8,
+  stove: 0x8f9aa3,
+  "sink-unit": 0xc9d2d8,
+  "kitchen-island": 0xc9d2d8,
+  dishwasher: 0xd7dee4,
+  "office-desk": 0xa9805a,
+  "office-chair": 0x475569,
+  "meeting-table": 0xa9805a,
+  "filing-cabinet": 0x94a3b8,
+  "reception-desk": 0xa9805a,
+  "partition-screen": 0xaebfcb,
+  "shelving-unit": 0x9aa7b1,
+  "display-fridge": 0xbcd7e6,
+  "checkout-counter": 0xa9805a,
+  "clothing-rack": 0x94a3b8,
+  "display-stand": 0xa9805a,
+  "hospital-bed": 0xd9eef5,
+  "stretcher": 0xb9d7e5,
+  "exam-table": 0xa8d5cf,
+  "nurse-station": 0x7fb8c8,
+  "medical-cart": 0x8cb8c7,
+  "service-counter": 0x7b93a6,
+  "waiting-bench": 0x5d7c91,
+  "locker-row": 0x718096,
+  "metal-bunk": 0x64748b,
+  "student-desk": 0xb68c61,
+  "whiteboard": 0xe8eef2,
+  "lab-bench": 0x78909c,
+  "library-shelf": 0x9b7653,
+  "gym-bleacher": 0x527a96
+};
+
+/**
+ * Interior furniture.
+ *
+ * A plain box would make every room look the same, so each family gets just enough
+ * detail to be identifiable from above: cushions and arms on seating, a mattress and
+ * pillows on beds, shelf lines on storage, a door split on appliances.
+ */
+function buildFurnitureObstacle(THREE: ThreeModule, obstacle: PlanObstacle, selected: boolean) {
+  const group = new THREE.Group();
+  const variant = obstacle.variant;
+  const baseColor = furnitureColors[variant ?? "office-desk"] ?? 0x9aa7b1;
+  const body = obstacleMaterial(THREE, baseColor, obstacle, selected, 0.02);
+  const accent = obstacleMaterial(THREE, 0xf1f5f9, obstacle, selected, 0.03);
+  const dark = obstacleMaterial(THREE, 0x475569, obstacle, selected, 0.02);
+  const { widthM, depthM, heightM } = obstacle;
+
+  const box = (w: number, h: number, d: number, x: number, y: number, z: number, material: THREE_NS.Material) => {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(Math.max(0.02, w), Math.max(0.02, h), Math.max(0.02, d)), material);
+    mesh.position.set(x, y, z);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    group.add(mesh);
+    return mesh;
+  };
+
+  if (obstacle.kind === "seating" && variant !== "office-chair" && variant !== "dining-chair") {
+    // Seat pad, back and two arms — the silhouette that says "sofa" from above.
+    const armW = Math.min(0.22, widthM * 0.14);
+    const backD = Math.min(0.22, depthM * 0.25);
+    box(widthM, heightM * 0.45, depthM, 0, heightM * 0.225, 0, body);
+    box(widthM, heightM * 0.55, backD, 0, heightM * 0.5, -depthM / 2 + backD / 2, body);
+    for (const sign of [-1, 1]) {
+      box(armW, heightM * 0.72, depthM * 0.9, sign * (widthM / 2 - armW / 2), heightM * 0.36, depthM * 0.05, body);
+    }
+    // Cushions span the width between the two arms, evenly divided.
+    const seatSpan = widthM - armW * 2;
+    const cushions = Math.max(1, Math.round(widthM / 0.95));
+    const cushionPitch = seatSpan / cushions;
+    for (let index = 0; index < cushions; index += 1) {
+      const centerX = -seatSpan / 2 + (index + 0.5) * cushionPitch;
+      box(cushionPitch - 0.04, 0.1, depthM * 0.62, centerX, heightM * 0.5, depthM * 0.08, accent);
+    }
+  } else if (variant === "metal-bunk") {
+    for (const level of [0.42, 1.3]) {
+      box(widthM, 0.12, depthM, 0, level, 0, body);
+      box(widthM * 0.92, 0.14, depthM * 0.92, 0, level + 0.12, 0, accent);
+    }
+    for (const x of [-widthM * 0.45, widthM * 0.45]) {
+      for (const z of [-depthM * 0.45, depthM * 0.45]) box(0.055, heightM, 0.055, x, heightM / 2, z, dark);
+    }
+  } else if (obstacle.kind === "bed") {
+    box(widthM, heightM * 0.35, depthM, 0, heightM * 0.175, 0, body);
+    box(widthM * 0.98, heightM * 0.3, depthM * 0.94, 0, heightM * 0.5, depthM * 0.02, accent);
+    // Headboard sits at the -z end, which is the plan's "top" of the bed.
+    box(widthM, heightM * 1.1, 0.08, 0, heightM * 0.55, -depthM / 2, body);
+    const pillows = widthM > 1.2 ? 2 : 1;
+    for (let index = 0; index < pillows; index += 1) {
+      const px = pillows === 1 ? 0 : (index === 0 ? -widthM * 0.24 : widthM * 0.24);
+      box(widthM * (pillows === 1 ? 0.6 : 0.42), 0.12, depthM * 0.16, px, heightM * 0.68, -depthM * 0.36, accent);
+    }
+  } else if (variant === "office-chair" || variant === "dining-chair") {
+    box(widthM * 0.8, 0.1, depthM * 0.8, 0, heightM * 0.42, 0, body);
+    box(widthM * 0.75, heightM * 0.42, 0.08, 0, heightM * 0.66, -depthM * 0.32, body);
+    if (variant === "office-chair") {
+      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, heightM * 0.4, 8), dark);
+      post.position.y = heightM * 0.2;
+      group.add(post);
+      box(widthM * 0.7, 0.05, depthM * 0.7, 0, 0.03, 0, dark);
+    } else {
+      for (const x of [-widthM * 0.31, widthM * 0.31]) {
+        for (const z of [-depthM * 0.3, depthM * 0.3]) {
+          box(0.045, heightM * 0.42, 0.045, x, heightM * 0.21, z, dark);
+        }
+      }
+    }
+  } else if (variant === "bookshelf" || variant === "shelving-unit" || variant === "wardrobe" || variant === "filing-cabinet" || variant === "locker-row" || variant === "library-shelf") {
+    box(widthM, heightM, depthM, 0, heightM / 2, 0, body);
+    const shelves = Math.max(2, Math.floor(heightM / 0.4));
+    for (let index = 1; index < shelves; index += 1) {
+      box(widthM * 0.94, 0.03, depthM * 0.92, 0, (heightM / shelves) * index, depthM * 0.03, accent);
+    }
+    if (variant === "wardrobe" || variant === "filing-cabinet") {
+      box(0.03, heightM * 0.96, depthM * 0.02, 0, heightM / 2, depthM / 2, dark);
+    }
+  } else if (obstacle.kind === "appliance") {
+    box(widthM, heightM, depthM, 0, heightM / 2, 0, body);
+    // Door split plus a handle, which is what distinguishes a fridge from a cabinet.
+    box(widthM * 0.98, 0.02, 0.02, 0, heightM * 0.62, depthM / 2, dark);
+    box(0.04, heightM * 0.3, 0.05, widthM * 0.34, heightM * 0.42, depthM / 2 + 0.02, dark);
+    if (variant === "stove") {
+      for (const [bx, bz] of [[-0.14, -0.12], [0.14, -0.12], [-0.14, 0.12], [0.14, 0.12]]) {
+        const burner = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 0.015, 12), dark);
+        burner.position.set(bx * (widthM / 0.6), heightM + 0.008, bz * (depthM / 0.6));
+        group.add(burner);
+      }
+    }
+    if (variant === "display-fridge") {
+      box(widthM * 0.88, heightM * 0.78, 0.02, 0, heightM * 0.55, depthM / 2 + 0.01, obstacleMaterial(THREE, 0xdff1fb, obstacle, selected, 0.04));
+    }
+  } else if (variant === "clothing-rack") {
+    for (const sign of [-1, 1]) {
+      const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, heightM, 8), dark);
+      leg.position.set(sign * (widthM / 2 - 0.05), heightM / 2, 0);
+      group.add(leg);
+    }
+    const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, widthM, 8), dark);
+    bar.rotation.z = Math.PI / 2;
+    bar.position.y = heightM * 0.94;
+    group.add(bar);
+    box(widthM * 0.9, heightM * 0.55, depthM * 0.55, 0, heightM * 0.6, 0, body);
+  } else if (variant === "rug") {
+    box(widthM, Math.max(0.02, heightM), depthM, 0, heightM / 2, 0, body);
+    box(widthM * 0.86, heightM + 0.004, depthM * 0.8, 0, heightM / 2 + 0.004, 0, accent);
+  } else {
+    // Tables, counters and desks: a top on legs rather than a solid block, so a camera
+    // reading of "sees over it" matches what is drawn.
+    const legInset = 0.08;
+    const topThickness = Math.min(0.08, heightM * 0.16);
+    box(widthM, topThickness, depthM, 0, heightM - topThickness / 2, 0, body);
+    const solidSided = variant === "kitchen-counter" || variant === "kitchen-island"
+      || variant === "sink-unit" || variant === "reception-desk" || variant === "checkout-counter"
+      || variant === "tv-unit" || variant === "partition-screen" || variant === "display-stand"
+      || variant === "dresser" || variant === "nightstand";
+    if (solidSided) {
+      box(widthM * 0.98, heightM - topThickness, depthM * 0.94, 0, (heightM - topThickness) / 2, 0, body);
+      if (variant === "sink-unit") {
+        box(widthM * 0.6, 0.04, depthM * 0.6, 0, heightM + 0.01, 0, obstacleMaterial(THREE, 0x94a3b8, obstacle, selected, 0.03));
+      }
+    } else {
+      for (const sx of [-1, 1]) {
+        for (const sz of [-1, 1]) {
+          box(0.07, heightM - topThickness, 0.07,
+            sx * (widthM / 2 - legInset), (heightM - topThickness) / 2, sz * (depthM / 2 - legInset), dark);
+        }
+      }
+    }
+  }
+
+  addSelectionFootprint(THREE, group, obstacle, selected);
+  group.position.set(obstacle.center.x, 0, obstacle.center.z);
+  group.rotation.y = -(obstacle.rotationDeg * Math.PI) / 180;
+  finishObstacleGroup(group, obstacle);
+  return group;
+}
+
+/**
+ * Ground cover such as lawn or roadway.
+ *
+ * Drawn as a thin slab just above the floor rather than a box: these read as painted
+ * areas on the plan, and they carry `blocksView: false` so they never cut a sight line.
+ */
+function buildSurfaceObstacle(THREE: ThreeModule, obstacle: PlanObstacle, selected: boolean) {
+  const group = new THREE.Group();
+  const color = surfaceColors[obstacle.variant ?? "grass"] ?? 0x8aa2ad;
+  const thickness = Math.max(0.02, obstacle.heightM);
+
+  const slab = new THREE.Mesh(
+    new THREE.BoxGeometry(obstacle.widthM, thickness, obstacle.depthM),
+    new THREE.MeshStandardMaterial({
+      color: selected ? palette.obstacleSelected : color,
+      roughness: obstacle.variant === "road" ? 0.95 : 0.85,
+      metalness: 0.02
+    })
+  );
+  slab.position.y = thickness / 2;
+  slab.receiveShadow = true;
+  group.add(slab);
+
+  // Centre line, so a road reads as a carriageway rather than a grey rectangle.
+  if (obstacle.variant === "road") {
+    const dashCount = Math.max(1, Math.floor(obstacle.widthM / 2));
+    for (let index = 0; index < dashCount; index += 1) {
+      const dash = new THREE.Mesh(
+        new THREE.BoxGeometry(Math.min(0.9, obstacle.widthM / (dashCount * 1.8)), 0.01, 0.12),
+        new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.6 })
+      );
+      dash.position.set(-obstacle.widthM / 2 + (index + 0.5) * (obstacle.widthM / dashCount), thickness + 0.005, 0);
+      group.add(dash);
+    }
+  }
+
+  group.position.set(obstacle.center.x, 0, obstacle.center.z);
+  group.rotation.y = -(obstacle.rotationDeg * Math.PI) / 180;
+  group.userData = { kind: "obstacle", id: obstacle.id };
+  group.traverse((child) => { child.userData = { kind: "obstacle", id: obstacle.id }; });
+  return group;
+}
+
+/** Fence, boundary wall or vehicle gate: a thin barrier with regular posts. */
+function buildBarrierObstacle(THREE: ThreeModule, obstacle: PlanObstacle, selected: boolean) {
+  const group = new THREE.Group();
+  const seeThrough = !obstacle.blocksView;
+  const bodyColor = selected
+    ? palette.obstacleSelected
+    : obstacle.kind === "gate" ? 0x64748b : seeThrough ? 0x9ca3af : 0xcbd5e1;
+
+  const panel = new THREE.Mesh(
+    new THREE.BoxGeometry(obstacle.widthM, obstacle.heightM, Math.max(0.04, obstacle.depthM)),
+    new THREE.MeshStandardMaterial({
+      color: bodyColor,
+      roughness: 0.7,
+      metalness: obstacle.kind === "gate" ? 0.45 : 0.2,
+      // Mesh fencing is modelled as transparent because it is see-through in reality;
+      // the preset also marks it non-blocking so coverage agrees with the picture.
+      transparent: seeThrough,
+      opacity: seeThrough ? 0.42 : 1
+    })
+  );
+  panel.position.y = obstacle.heightM / 2;
+  panel.castShadow = !seeThrough;
+  group.add(panel);
+
+  const postCount = Math.max(2, Math.round(obstacle.widthM / 2.5) + 1);
+  const postMaterial = new THREE.MeshStandardMaterial({ color: selected ? palette.obstacleSelected : 0x6b7280, roughness: 0.6, metalness: 0.35 });
+  for (let index = 0; index < postCount; index += 1) {
+    const post = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.06, 0.06, obstacle.heightM * 1.04, 8),
+      postMaterial
+    );
+    post.position.set(-obstacle.widthM / 2 + (index * obstacle.widthM) / (postCount - 1), obstacle.heightM * 0.52, 0);
+    group.add(post);
+  }
+
+  group.position.set(obstacle.center.x, 0, obstacle.center.z);
+  group.rotation.y = -(obstacle.rotationDeg * Math.PI) / 180;
+  group.userData = { kind: "obstacle", id: obstacle.id };
+  group.traverse((child) => { child.userData = { kind: "obstacle", id: obstacle.id }; });
+  return group;
+}
+
+/** Camera mast or lighting column, with a head that shows which one it is. */
+function buildPoleObstacle(THREE: ThreeModule, obstacle: PlanObstacle, selected: boolean) {
+  const group = new THREE.Group();
+  const isLight = obstacle.variant === "light-pole";
+  const metal = new THREE.MeshStandardMaterial({
+    color: selected ? palette.obstacleSelected : 0x94a3b8,
+    roughness: 0.45,
+    metalness: 0.55
+  });
+
+  const shaft = new THREE.Mesh(
+    new THREE.CylinderGeometry(Math.max(0.05, obstacle.widthM / 2.6), Math.max(0.07, obstacle.widthM / 2), obstacle.heightM, 12),
+    metal
+  );
+  shaft.position.y = obstacle.heightM / 2;
+  shaft.castShadow = true;
+  group.add(shaft);
+
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(obstacle.widthM * 0.9, obstacle.widthM, 0.12, 12), metal);
+  base.position.y = 0.06;
+  group.add(base);
+
+  if (isLight) {
+    const arm = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.08, 0.08), metal);
+    arm.position.set(0.45, obstacle.heightM - 0.1, 0);
+    group.add(arm);
+    const lamp = new THREE.Mesh(
+      new THREE.BoxGeometry(0.55, 0.14, 0.3),
+      new THREE.MeshStandardMaterial({ color: 0xfef3c7, emissive: 0xfde68a, emissiveIntensity: 0.55, roughness: 0.4 })
+    );
+    lamp.position.set(0.85, obstacle.heightM - 0.18, 0);
+    group.add(lamp);
+  } else {
+    const bracket = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.08, 0.08), metal);
+    bracket.position.set(0.25, obstacle.heightM - 0.12, 0);
+    group.add(bracket);
+    const head = new THREE.Mesh(
+      new THREE.BoxGeometry(0.34, 0.22, 0.22),
+      new THREE.MeshStandardMaterial({ color: selected ? palette.obstacleSelected : palette.cameraBody, roughness: 0.4, metalness: 0.3 })
+    );
+    head.position.set(0.5, obstacle.heightM - 0.16, 0);
+    group.add(head);
+  }
+
+  group.position.set(obstacle.center.x, 0, obstacle.center.z);
+  group.rotation.y = -(obstacle.rotationDeg * Math.PI) / 180;
+  group.userData = { kind: "obstacle", id: obstacle.id };
+  group.traverse((child) => { child.userData = { kind: "obstacle", id: obstacle.id }; });
+  return group;
+}
+
+function buildElevatorObstacle(THREE: ThreeModule, obstacle: PlanObstacle, selected: boolean) {
+  const group = new THREE.Group();
+  const shell = obstacleMaterial(THREE, 0x64748b, obstacle, selected, 0.02);
+  const steel = obstacleMaterial(THREE, 0xcbd5e1, obstacle, selected, 0.04);
+  const door = obstacleMaterial(THREE, 0x94a3b8, obstacle, selected, 0.03);
+  const dark = obstacleMaterial(THREE, 0x1e293b, obstacle, selected, 0.02);
+  const { widthM, depthM, heightM } = obstacle;
+
+  const box = (w: number, h: number, d: number, x: number, y: number, z: number, material: THREE_NS.Material) => {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material);
+    mesh.position.set(x, y, z);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    group.add(mesh);
+  };
+
+  // Solid shaft at the rear, with a recessed two-panel sliding door on the circulation side (+z).
+  box(widthM, heightM, depthM * 0.42, 0, heightM / 2, -depthM * 0.29, shell);
+  box(0.16, heightM, depthM * 0.58, -widthM / 2 + 0.08, heightM / 2, depthM * 0.21, shell);
+  box(0.16, heightM, depthM * 0.58, widthM / 2 - 0.08, heightM / 2, depthM * 0.21, shell);
+  box(widthM, 0.18, depthM * 0.58, 0, heightM - 0.09, depthM * 0.21, shell);
+  box(widthM * 0.43, heightM * 0.82, 0.08, -widthM * 0.22, heightM * 0.43, depthM / 2 - 0.05, door);
+  box(widthM * 0.43, heightM * 0.82, 0.08, widthM * 0.22, heightM * 0.43, depthM / 2 - 0.05, door);
+  box(0.035, heightM * 0.82, 0.1, 0, heightM * 0.43, depthM / 2, dark);
+  box(widthM * 0.32, 0.18, 0.08, 0, heightM * 0.92, depthM / 2, steel);
+  box(0.12, 0.22, 0.08, widthM * 0.39, heightM * 0.56, depthM / 2, dark);
+
+  group.position.set(obstacle.center.x, 0, obstacle.center.z);
+  group.rotation.y = -(obstacle.rotationDeg * Math.PI) / 180;
+  group.userData = { kind: "obstacle", id: obstacle.id };
+  group.traverse((child) => Object.assign(child.userData, { kind: "obstacle", id: obstacle.id }));
+  return group;
+}
+
+function buildEscalatorObstacle(THREE: ThreeModule, obstacle: PlanObstacle, selected: boolean) {
+  const group = new THREE.Group();
+  const stepCount = 18;
+  const tread = obstacle.widthM / stepCount;
+  const rise = obstacle.heightM / stepCount;
+  const stepMaterial = obstacleMaterial(THREE, 0x94a3b8, obstacle, selected, 0.04);
+  const edgeMaterial = obstacleMaterial(THREE, 0xfbbf24, obstacle, selected, 0.02);
+  const railMaterial = obstacleMaterial(THREE, 0x1e293b, obstacle, selected, 0.7);
+  const glassMaterial = obstacleMaterial(THREE, 0x9ed8ea, { ...obstacle, blocksView: false }, selected, 0.05);
+
+  for (let index = 0; index < stepCount; index += 1) {
+    const stepHeight = rise * (index + 1);
+    const x = -obstacle.widthM / 2 + tread * (index + 0.5);
+    const step = new THREE.Mesh(new THREE.BoxGeometry(tread * 1.02, stepHeight, obstacle.depthM * 0.72), stepMaterial);
+    step.position.set(x, stepHeight / 2, 0);
+    group.add(step);
+    const edge = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.035, obstacle.depthM * 0.74), edgeMaterial);
+    edge.position.set(x + tread / 2, stepHeight + 0.018, 0);
+    group.add(edge);
+  }
+
+  for (const z of [-obstacle.depthM * 0.48, obstacle.depthM * 0.48]) {
+    const glass = new THREE.Mesh(new THREE.BoxGeometry(obstacle.widthM, 0.65, 0.055), glassMaterial);
+    glass.position.set(0, obstacle.heightM / 2 + 0.42, z);
+    glass.rotation.z = Math.atan2(obstacle.heightM, obstacle.widthM);
+    group.add(glass);
+    group.add(branchBetween(
+      THREE,
+      new THREE.Vector3(-obstacle.widthM / 2, 0.78, z),
+      new THREE.Vector3(obstacle.widthM / 2, obstacle.heightM + 0.78, z),
+      0.055,
+      railMaterial
+    ));
+  }
+
+  addSelectionFootprint(THREE, group, obstacle, selected);
+  return finishObstacleGroup(group, obstacle);
 }
 
 function buildStairObstacle(THREE: ThreeModule, obstacle: PlanObstacle, selected: boolean) {
@@ -536,6 +1091,37 @@ export function buildFloorFootprintGuide(THREE: ThreeModule, floor: FloorPlan) {
     group.add(segment);
   }
   group.userData = { kind: "floor-reference", floorId: floor.id };
+  return group;
+}
+
+/** Architectural overall dimensions: one clean chain for each main axis. */
+export function buildOverallDimensionGuide(THREE: ThreeModule, floor: FloorPlan) {
+  const group = new THREE.Group();
+  const bounds = floorWallBounds(floor);
+  if (!bounds) return group;
+  const offset = Math.max(1.4, Math.min(2.4, Math.max(bounds.width, bounds.depth) * 0.055));
+  const y = 0.12;
+  const xDimensionZ = bounds.maxZ + offset;
+  const zDimensionX = bounds.minX - offset;
+  const material = new THREE.LineBasicMaterial({ color: 0x164e63, depthTest: false, transparent: true, opacity: 0.88 });
+  const segment = (a: THREE_NS.Vector3, b: THREE_NS.Vector3) => {
+    const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([a, b]), material);
+    line.renderOrder = 48;
+    group.add(line);
+  };
+  const tick = 0.45;
+
+  segment(new THREE.Vector3(bounds.minX, y, xDimensionZ), new THREE.Vector3(bounds.maxX, y, xDimensionZ));
+  segment(new THREE.Vector3(bounds.minX, y, bounds.maxZ + 0.15), new THREE.Vector3(bounds.minX, y, xDimensionZ + 0.3));
+  segment(new THREE.Vector3(bounds.maxX, y, bounds.maxZ + 0.15), new THREE.Vector3(bounds.maxX, y, xDimensionZ + 0.3));
+  segment(new THREE.Vector3(bounds.minX - tick, y, xDimensionZ - tick), new THREE.Vector3(bounds.minX + tick, y, xDimensionZ + tick));
+  segment(new THREE.Vector3(bounds.maxX - tick, y, xDimensionZ - tick), new THREE.Vector3(bounds.maxX + tick, y, xDimensionZ + tick));
+
+  segment(new THREE.Vector3(zDimensionX, y, bounds.minZ), new THREE.Vector3(zDimensionX, y, bounds.maxZ));
+  segment(new THREE.Vector3(bounds.minX - 0.15, y, bounds.minZ), new THREE.Vector3(zDimensionX - 0.3, y, bounds.minZ));
+  segment(new THREE.Vector3(bounds.minX - 0.15, y, bounds.maxZ), new THREE.Vector3(zDimensionX - 0.3, y, bounds.maxZ));
+  segment(new THREE.Vector3(zDimensionX - tick, y, bounds.minZ + tick), new THREE.Vector3(zDimensionX + tick, y, bounds.minZ - tick));
+  segment(new THREE.Vector3(zDimensionX - tick, y, bounds.maxZ + tick), new THREE.Vector3(zDimensionX + tick, y, bounds.maxZ - tick));
   return group;
 }
 
@@ -1020,6 +1606,7 @@ export function buildYawHandle(
 ): THREE_NS.Group {
   const group = new THREE.Group();
   const yawRad = (yawDeg * Math.PI) / 180;
+  const handleColor = isCardinalAngle(yawDeg) ? 0xef4444 : 0xf59e0b;
   const reach = 2.2;
   const tip = { x: position.x + Math.cos(yawRad) * reach, z: position.z + Math.sin(yawRad) * reach };
 
@@ -1028,18 +1615,68 @@ export function buildYawHandle(
       new THREE.Vector3(position.x, mountHeightM, position.z),
       new THREE.Vector3(tip.x, mountHeightM, tip.z)
     ]),
-    new THREE.LineBasicMaterial({ color: 0xf59e0b })
+    new THREE.LineBasicMaterial({ color: handleColor })
   );
+  // The stem is guidance only. It deliberately has no interaction metadata, so a
+  // pointer press near the camera body can never be interpreted as a rotate gesture.
   group.add(stem);
 
   const knob = new THREE.Mesh(
     new THREE.SphereGeometry(0.34, 16, 12),
-    new THREE.MeshStandardMaterial({ color: 0xf59e0b, roughness: 0.35 })
+    new THREE.MeshStandardMaterial({ color: handleColor, roughness: 0.35 })
   );
   knob.position.set(tip.x, mountHeightM, tip.z);
+  knob.userData = { kind: "camera-yaw", id };
   group.add(knob);
 
-  group.traverse((child) => { child.userData = { kind: "camera-yaw", id }; });
+  return group;
+}
+
+/**
+ * Rotation handle for a placed obstacle.
+ *
+ * Mirrors the camera's yaw handle so one gesture works everywhere: grab the amber knob
+ * and drag to spin the element. Reach scales with the footprint, so the handle clears a
+ * conference table as well as a nightstand.
+ */
+export function buildObstacleRotateHandle(
+  THREE: ThreeModule,
+  obstacle: PlanObstacle
+): THREE_NS.Group {
+  const group = new THREE.Group();
+  const rotationRad = -(obstacle.rotationDeg * Math.PI) / 180;
+  const handleColor = isCardinalAngle(obstacle.rotationDeg) ? 0xef4444 : 0xf59e0b;
+  const reach = Math.max(1.1, Math.max(obstacle.widthM, obstacle.depthM) * 0.75 + 0.7);
+  const handleHeight = Math.max(0.25, obstacle.heightM + 0.25);
+  const tip = {
+    x: obstacle.center.x + Math.cos(rotationRad) * reach,
+    z: obstacle.center.z + Math.sin(rotationRad) * reach
+  };
+
+  group.add(new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(obstacle.center.x, handleHeight, obstacle.center.z),
+      new THREE.Vector3(tip.x, handleHeight, tip.z)
+    ]),
+    new THREE.LineBasicMaterial({ color: handleColor })
+  ));
+
+  const handleMaterial = new THREE.MeshStandardMaterial({ color: handleColor, roughness: 0.35 });
+
+  // An arrow head rather than a plain ball, so the element's facing is readable.
+  const arrow = new THREE.Mesh(new THREE.ConeGeometry(0.24, 0.6, 12), handleMaterial);
+  arrow.position.set(tip.x, handleHeight, tip.z);
+  arrow.rotation.z = -Math.PI / 2;
+  arrow.rotation.y = -rotationRad;
+  // Only the arrow head starts rotation. Previously the line and the small centre
+  // marker were tagged too, which made dragging the selected object itself rotate it.
+  arrow.userData = { kind: "obstacle-rotate", id: obstacle.id };
+  group.add(arrow);
+
+  const knob = new THREE.Mesh(new THREE.SphereGeometry(0.16, 12, 10), handleMaterial);
+  knob.position.set(obstacle.center.x, handleHeight, obstacle.center.z);
+  group.add(knob);
+
   return group;
 }
 
@@ -1058,21 +1695,39 @@ function polygonShape(THREE: ThreeModule, polygon: Vec2[]): THREE_NS.Shape {
 export function buildCoverageMesh(THREE: ThreeModule, coverage: CameraCoverage): THREE_NS.Group {
   const group = new THREE.Group();
 
-  coverage.bands.forEach((band, index) => {
+  /*
+   * Bands are disjoint rings, so opacity no longer compounds and each can be drawn at
+   * full strength. They sit at one height with a shared render order — nothing overlaps,
+   * so there is no z-fighting to stagger around, and every zone keeps its own colour.
+   */
+  coverage.bands.forEach((band) => {
     if (band.polygon.length < 3) return;
-    const geometry = new THREE.ShapeGeometry(polygonShape(THREE, band.polygon));
-    const material = new THREE.MeshBasicMaterial({
-      color: new THREE.Color(band.color),
-      transparent: true,
-      opacity: 0.2,
-      side: THREE.DoubleSide,
-      depthWrite: false
-    });
-    const mesh = new THREE.Mesh(geometry, material);
-    mesh.rotation.x = Math.PI / 2;
-    mesh.position.y = 0.02 + index * 0.006;
-    mesh.renderOrder = 2 + index;
-    group.add(mesh);
+    const shape = polygonShape(THREE, band.polygon);
+    const fill = new THREE.Mesh(
+      new THREE.ShapeGeometry(shape),
+      new THREE.MeshBasicMaterial({
+        color: new THREE.Color(band.color),
+        transparent: true,
+        opacity: 0.55,
+        side: THREE.DoubleSide,
+        depthWrite: false
+      })
+    );
+    fill.rotation.x = Math.PI / 2;
+    fill.position.y = 0.02;
+    fill.renderOrder = 3;
+    group.add(fill);
+
+    // A crisp edge in the same hue keeps the boundary between zones readable where two
+    // saturated fills meet.
+    const edge = new THREE.LineLoop(
+      new THREE.BufferGeometry().setFromPoints(
+        band.polygon.map((point) => new THREE.Vector3(point.x, 0.045, point.z))
+      ),
+      new THREE.LineBasicMaterial({ color: new THREE.Color(band.color), transparent: true, opacity: 0.95 })
+    );
+    edge.renderOrder = 4;
+    group.add(edge);
   });
 
   if (coverage.polygon.length >= 3) {
@@ -1202,30 +1857,58 @@ export function buildPreviewRect(THREE: ThreeModule, from: Vec2, to: Vec2, color
   return group;
 }
 
-/** Midpoints of every wall and obstacle edge, for the dimension overlay. */
-export type DimensionLabel = { id: string; text: string; world: { x: number; y: number; z: number } };
+export type DimensionLabel = {
+  id: string;
+  kind: "overall-length" | "overall-width" | "selected-wall";
+  text: string;
+  world: { x: number; y: number; z: number };
+};
 
-export function collectDimensionLabels(floor: FloorPlan): DimensionLabel[] {
-  const labels: DimensionLabel[] = [];
+function floorWallBounds(floor: FloorPlan) {
+  const points = floor.walls.flatMap((wall) => [wall.a, wall.b]);
+  if (!points.length) return null;
+  const minX = Math.min(...points.map((point) => point.x));
+  const maxX = Math.max(...points.map((point) => point.x));
+  const minZ = Math.min(...points.map((point) => point.z));
+  const maxZ = Math.max(...points.map((point) => point.z));
+  return { minX, maxX, minZ, maxZ, width: maxX - minX, depth: maxZ - minZ };
+}
 
-  for (const wall of floor.walls) {
-    const span = Math.hypot(wall.b.x - wall.a.x, wall.b.z - wall.a.z);
-    if (span < 0.2) continue;
+/**
+ * Overall dimensions stay visible. An internal wall reveals its length only when
+ * selected, and furniture never receives a dimension badge.
+ */
+export function collectDimensionLabels(floor: FloorPlan, selectedWallId?: string): DimensionLabel[] {
+  const bounds = floorWallBounds(floor);
+  if (!bounds) return [];
+  const offset = Math.max(1.4, Math.min(2.4, Math.max(bounds.width, bounds.depth) * 0.055));
+  const labels: DimensionLabel[] = [
+    {
+      id: "overall-length",
+      kind: "overall-length",
+      text: `طول کل · ${bounds.width.toFixed(1)} متر`,
+      world: { x: (bounds.minX + bounds.maxX) / 2, y: 0.2, z: bounds.maxZ + offset }
+    },
+    {
+      id: "overall-width",
+      kind: "overall-width",
+      text: `عرض کل · ${bounds.depth.toFixed(1)} متر`,
+      world: { x: bounds.minX - offset, y: 0.2, z: (bounds.minZ + bounds.maxZ) / 2 }
+    }
+  ];
+  const selectedWall = selectedWallId ? floor.walls.find((wall) => wall.id === selectedWallId) : undefined;
+  if (selectedWall) {
+    const span = Math.hypot(selectedWall.b.x - selectedWall.a.x, selectedWall.b.z - selectedWall.a.z);
     labels.push({
-      id: `wall-${wall.id}`,
-      text: `${span.toFixed(2)} m`,
-      world: { x: (wall.a.x + wall.b.x) / 2, y: wall.heightM + 0.15, z: (wall.a.z + wall.b.z) / 2 }
+      id: `selected-wall-${selectedWall.id}`,
+      kind: "selected-wall",
+      text: `دیوار انتخابی · ${span.toFixed(2)} متر`,
+      world: {
+        x: (selectedWall.a.x + selectedWall.b.x) / 2,
+        y: selectedWall.heightM + 0.2,
+        z: (selectedWall.a.z + selectedWall.b.z) / 2
+      }
     });
   }
-
-  for (const obstacle of floor.obstacles) {
-    const corners = obstacleCorners(obstacle);
-    labels.push({
-      id: `obs-${obstacle.id}`,
-      text: `${obstacle.widthM.toFixed(2)} × ${obstacle.depthM.toFixed(2)} m`,
-      world: { x: (corners[0].x + corners[2].x) / 2, y: obstacle.heightM + 0.15, z: (corners[0].z + corners[2].z) / 2 }
-    });
-  }
-
   return labels;
 }

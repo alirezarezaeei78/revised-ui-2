@@ -218,7 +218,15 @@ export function collectOccluders(walls: PlanWall[], obstacles: PlanObstacle[], d
     if (!wall.blocksView) continue;
     const span = distance(wall.a, wall.b);
     const openings = doors
-      .filter((door) => door.wallId === wall.id)
+      /*
+       * Only doorways are cut out of the wall.
+       *
+       * A window is a cosmetic element drawn on the wall — the masonry around and behind
+       * it still stops a camera, so it must not create a gap in the occluder. Seeing
+       * *through* a boundary is a property of the wall itself (`blocksView: false`),
+       * which is how a glass partition is modelled.
+       */
+      .filter((door) => door.wallId === wall.id && door.type !== "window")
       .map((door) => {
         const halfOffset = span > 0 ? Math.min(0.49, door.widthM / span / 2) : 0;
         return {
@@ -307,6 +315,107 @@ export function visibilityFan(
     points.push({ x: origin.x + Math.cos(angle) * reach, z: origin.z + Math.sin(angle) * reach });
   }
   return points;
+}
+
+/**
+ * Visible band between two radii, as a closed ring.
+ *
+ * Nested fans were stacking four translucent layers on the same ground, so the inner
+ * zones showed through as a muddy blend and the widest one covered the rest. A ring is
+ * the region a band actually owns, which lets each be drawn once in a solid colour.
+ *
+ * The outer arc is walked forward and the inner arc back, which closes cleanly because a
+ * visibility fan is star-shaped about the origin. `innerRange` of 0 degenerates to the
+ * ordinary fan, apex included.
+ */
+export function visibilityRing(
+  origin: Vec2,
+  headingRad: number,
+  fovRad: number,
+  innerRange: number,
+  outerRange: number,
+  segments: Segment[],
+  rays: number,
+  sightHeightAt?: (distanceAlongRay: number) => number
+): Vec2[] {
+  if (!(outerRange > innerRange)) return [];
+  const steps = Math.max(8, rays);
+  const outer: Vec2[] = [];
+  const inner: Vec2[] = [];
+
+  for (let index = 0; index <= steps; index += 1) {
+    const angle = fovRad >= Math.PI * 2
+      ? (index / steps) * Math.PI * 2
+      : headingRad - fovRad / 2 + (fovRad * index) / steps;
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    // One cast per ray, reused for both radii: an occluder that stops the ray short
+    // truncates the outer edge and collapses the ring to nothing past that point.
+    const reach = castRay(origin, angle, outerRange, segments, sightHeightAt);
+    const outerReach = Math.min(reach, outerRange);
+    const innerReach = Math.min(reach, innerRange);
+    outer.push({ x: origin.x + cos * outerReach, z: origin.z + sin * outerReach });
+    inner.push({ x: origin.x + cos * innerReach, z: origin.z + sin * innerReach });
+  }
+
+  if (innerRange <= 1e-6) return [origin, ...outer];
+  return [...outer, ...inner.reverse()];
+}
+
+export type PlanRect = { minX: number; maxX: number; minZ: number; maxZ: number };
+
+export function rectFromPoints(a: Vec2, b: Vec2): PlanRect {
+  return {
+    minX: Math.min(a.x, b.x),
+    maxX: Math.max(a.x, b.x),
+    minZ: Math.min(a.z, b.z),
+    maxZ: Math.max(a.z, b.z)
+  };
+}
+
+export function pointInRect(point: Vec2, rect: PlanRect): boolean {
+  return point.x >= rect.minX && point.x <= rect.maxX && point.z >= rect.minZ && point.z <= rect.maxZ;
+}
+
+/**
+ * Whether a segment touches a rectangle at all.
+ *
+ * A marquee must catch a long wall that merely crosses the box, not just one whose
+ * endpoint happens to fall inside it — dragging over the middle of a room should select
+ * its walls. Endpoints are tested first because that is the common case and is cheap;
+ * the edge tests then catch the crossing case.
+ */
+export function segmentIntersectsRect(a: Vec2, b: Vec2, rect: PlanRect): boolean {
+  if (pointInRect(a, rect) || pointInRect(b, rect)) return true;
+
+  const corners: Vec2[] = [
+    { x: rect.minX, z: rect.minZ },
+    { x: rect.maxX, z: rect.minZ },
+    { x: rect.maxX, z: rect.maxZ },
+    { x: rect.minX, z: rect.maxZ }
+  ];
+  for (let index = 0; index < corners.length; index += 1) {
+    if (segmentsIntersect(a, b, corners[index], corners[(index + 1) % corners.length])) return true;
+  }
+  return false;
+}
+
+function segmentsIntersect(p1: Vec2, p2: Vec2, p3: Vec2, p4: Vec2): boolean {
+  const orient = (a: Vec2, b: Vec2, c: Vec2) => Math.sign((b.x - a.x) * (c.z - a.z) - (b.z - a.z) * (c.x - a.x));
+  const o1 = orient(p1, p2, p3);
+  const o2 = orient(p1, p2, p4);
+  const o3 = orient(p3, p4, p1);
+  const o4 = orient(p3, p4, p2);
+  return o1 !== o2 && o3 !== o4;
+}
+
+/** Rotated rectangle overlap, tested via its corners and its own edges. */
+export function obstacleIntersectsRect(corners: Vec2[], rect: PlanRect): boolean {
+  if (corners.some((corner) => pointInRect(corner, rect))) return true;
+  for (let index = 0; index < corners.length; index += 1) {
+    if (segmentIntersectsRect(corners[index], corners[(index + 1) % corners.length], rect)) return true;
+  }
+  return false;
 }
 
 export function pointInPolygon(point: Vec2, polygon: Vec2[]): boolean {

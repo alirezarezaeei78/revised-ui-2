@@ -1,11 +1,22 @@
 "use client";
 
-import { BrickWall, Camera, Compass, Cuboid, DoorOpen, Ruler, Trash2 } from "lucide-react";
-import type { FloorPlan, PlanDefaults, PlanObstacle, PlanSelection, PlanTool, WallDrawMode } from "@/src/domain/planner/types";
+import { Blinds, BrickWall, Camera, Compass, Cuboid, DoorOpen, Layers, Ruler, Trash2, X } from "lucide-react";
+import {
+  soleSelection,
+  type FloorPlan,
+  type PlanDefaults,
+  type PlanObstacle,
+  type PlanSelection,
+  type PlanSelectionRef,
+  type PlanTool,
+  type WallDrawMode
+} from "@/src/domain/planner/types";
+import { deleteSelection, describeElement, summariseSelection } from "@/src/lib/planner/selection";
 import type { CameraHousing, SurveillanceTask } from "@/src/domain/catalog/types";
 import { cameraFovDeg, computeCameraCoverage, focalForTask } from "@/src/lib/planner/coverage";
 import { collectOccluders } from "@/src/lib/planner/geometry";
 import { sensorOptions } from "@/src/lib/chatbot/slots";
+import { housingLabels } from "@/src/lib/planner/camera-templates";
 import { formatFa } from "@/src/lib/chatbot/persian";
 import { applyObstaclePreset, obstaclePreset, obstaclePresets } from "@/src/lib/planner/obstacle-presets";
 
@@ -65,7 +76,26 @@ export function PlanInspector({
   onFloorChange: (floor: FloorPlan) => void;
   onSelect: (selection: PlanSelection) => void;
 }) {
-  if (!selection) {
+  /*
+   * A plural selection replaces the property editor entirely.
+   *
+   * Editing one element's lens or wall height means nothing when twelve things are
+   * selected, so the panel switches to what is actually actionable in bulk: seeing what
+   * is held, and removing it.
+   */
+  if (selection.length > 1) {
+    return (
+      <MultiSelectionPanel
+        floor={floor}
+        selection={selection}
+        onFloorChange={onFloorChange}
+        onSelect={onSelect}
+      />
+    );
+  }
+
+  const sole = soleSelection(selection);
+  if (!sole) {
     if (activeTool === "wall") {
       return (
         <aside className="plan-inspector plan-tool-inspector">
@@ -125,8 +155,8 @@ export function PlanInspector({
     );
   }
 
-  if (selection.kind === "wall") {
-    const wall = floor.walls.find((item) => item.id === selection.id);
+  if (sole.kind === "wall") {
+    const wall = floor.walls.find((item) => item.id === sole.id);
     if (!wall) return null;
     const span = Math.hypot(wall.b.x - wall.a.x, wall.b.z - wall.a.z);
     const update = (patch: Partial<typeof wall>) => {
@@ -144,7 +174,20 @@ export function PlanInspector({
 
     return (
       <aside className="plan-inspector">
-        <header><Ruler size={17} aria-hidden="true" /><strong>دیوار</strong></header>
+        <header>
+          <Ruler size={17} aria-hidden="true" /><strong>دیوار</strong>
+          <DeleteAction
+            label="حذف دیوار"
+            onDelete={() => {
+              onFloorChange({
+                ...floor,
+                walls: floor.walls.filter((item) => item.id !== wall.id),
+                doors: (floor.doors ?? []).filter((door) => door.wallId !== wall.id)
+              });
+              onSelect([]);
+            }}
+          />
+        </header>
         <div className="plan-field-readout"><span>طول</span><strong>{span.toFixed(2)} متر</strong></div>
         <NumberField label="ارتفاع" unit="متر" value={wall.heightM} min={0.3} max={12} step={0.1} onChange={(value) => update({ heightM: value })} />
         <NumberField label="ضخامت" unit="متر" value={wall.thicknessM} min={0.05} max={1} step={0.05} onChange={(value) => update({ thicknessM: value })} />
@@ -152,25 +195,16 @@ export function PlanInspector({
           <input type="checkbox" checked={wall.blocksView} onChange={(event) => update({ blocksView: event.target.checked })} />
           <span>مانع دید است (شیشه را بردارید)</span>
         </label>
-        <button type="button" className="plan-delete" onClick={() => {
-          onFloorChange({
-            ...floor,
-            walls: floor.walls.filter((item) => item.id !== wall.id),
-            doors: (floor.doors ?? []).filter((door) => door.wallId !== wall.id)
-          });
-          onSelect(null);
-        }}>
-          <Trash2 size={15} aria-hidden="true" />حذف دیوار
-        </button>
       </aside>
     );
   }
 
-  if (selection.kind === "door") {
-    const door = (floor.doors ?? []).find((item) => item.id === selection.id);
+  if (sole.kind === "door") {
+    const door = (floor.doors ?? []).find((item) => item.id === sole.id);
     if (!door) return null;
     const wall = floor.walls.find((item) => item.id === door.wallId);
     if (!wall) return null;
+    const isWindow = door.type === "window";
     const wallLengthM = Math.hypot(wall.b.x - wall.a.x, wall.b.z - wall.a.z);
     const update = (patch: Partial<typeof door>) => {
       const nextWidthM = Math.min(patch.widthM ?? door.widthM, Math.max(0.5, wallLengthM - 0.2));
@@ -186,10 +220,20 @@ export function PlanInspector({
 
     return (
       <aside className="plan-inspector">
-        <header><DoorOpen size={17} aria-hidden="true" /><strong>در</strong></header>
+        <header>
+          {isWindow ? <Blinds size={17} aria-hidden="true" /> : <DoorOpen size={17} aria-hidden="true" />}
+          <strong>{isWindow ? "پنجره" : "در"}</strong>
+          <DeleteAction
+            label={isWindow ? "حذف پنجره" : "حذف در"}
+            onDelete={() => {
+              onFloorChange({ ...floor, doors: (floor.doors ?? []).filter((item) => item.id !== door.id) });
+              onSelect([]);
+            }}
+          />
+        </header>
         <div className="plan-field-readout"><span>دیوار میزبان</span><strong>{wallLengthM.toFixed(2)} متر</strong></div>
         <NumberField
-          label="عرض در"
+          label={isWindow ? "عرض پنجره" : "عرض در"}
           unit="متر"
           value={door.widthM}
           min={0.5}
@@ -198,7 +242,7 @@ export function PlanInspector({
           onChange={(widthM) => update({ widthM })}
         />
         <NumberField
-          label="ارتفاع در"
+          label={isWindow ? "ارتفاع پنجره" : "ارتفاع در"}
           unit="متر"
           value={door.heightM}
           min={0.5}
@@ -206,6 +250,17 @@ export function PlanInspector({
           step={0.05}
           onChange={(heightM) => update({ heightM })}
         />
+        {isWindow ? (
+          <NumberField
+            label="ارتفاع کف پنجره"
+            unit="متر"
+            value={door.sillHeightM ?? 0.9}
+            min={0}
+            max={Math.max(0, wall.heightM - door.heightM - 0.05)}
+            step={0.05}
+            onChange={(sillHeightM) => update({ sillHeightM })}
+          />
+        ) : null}
         <NumberField
           label="موقعیت روی دیوار"
           unit="درصد"
@@ -215,41 +270,52 @@ export function PlanInspector({
           step={1}
           onChange={(offsetPercent) => update({ offset: offsetPercent / 100 })}
         />
-        <label className="plan-text-field">
-          <span>سمت لولا</span>
-          <select value={door.hinge} onChange={(event) => update({ hinge: event.target.value as typeof door.hinge })}>
-            <option value="start">ابتدای بازشو</option>
-            <option value="end">انتهای بازشو</option>
-          </select>
-        </label>
-        <NumberField
-          label="میزان بازشدگی"
-          unit="درجه"
-          value={door.openAngleDeg}
-          min={0}
-          max={90}
-          step={5}
-          onChange={(openAngleDeg) => update({ openAngleDeg })}
-        />
-        <button type="button" className="plan-delete" onClick={() => {
-          onFloorChange({ ...floor, doors: (floor.doors ?? []).filter((item) => item.id !== door.id) });
-          onSelect(null);
-        }}>
-          <Trash2 size={15} aria-hidden="true" />حذف در
-        </button>
+        {isWindow ? (
+          <div className="plan-tool-tip">
+            <span>پنجره فقط یک عنصر ظاهری روی دیوار است و پوشش دوربین را تغییر نمی‌دهد. برای دیوار شیشه‌ای که دید از آن عبور می‌کند، از ابزار «جدار شیشه‌ای» استفاده کنید.</span>
+          </div>
+        ) : (
+          <>
+            <label className="plan-text-field">
+              <span>سمت لولا</span>
+              <select value={door.hinge} onChange={(event) => update({ hinge: event.target.value as typeof door.hinge })}>
+                <option value="start">ابتدای بازشو</option>
+                <option value="end">انتهای بازشو</option>
+              </select>
+            </label>
+            <NumberField
+              label="میزان بازشدگی"
+              unit="درجه"
+              value={door.openAngleDeg}
+              min={0}
+              max={90}
+              step={5}
+              onChange={(openAngleDeg) => update({ openAngleDeg })}
+            />
+          </>
+        )}
       </aside>
     );
   }
 
-  if (selection.kind === "obstacle") {
-    const obstacle = floor.obstacles.find((item) => item.id === selection.id);
+  if (sole.kind === "obstacle") {
+    const obstacle = floor.obstacles.find((item) => item.id === sole.id);
     if (!obstacle) return null;
     const update = (patch: Partial<typeof obstacle>) =>
       onFloorChange({ ...floor, obstacles: floor.obstacles.map((item) => (item.id === obstacle.id ? { ...item, ...patch } : item)) });
 
     return (
       <aside className="plan-inspector">
-        <header><Ruler size={17} aria-hidden="true" /><strong>مانع</strong></header>
+        <header>
+          <Ruler size={17} aria-hidden="true" /><strong>مانع</strong>
+          <DeleteAction
+            label="حذف مانع"
+            onDelete={() => {
+              onFloorChange({ ...floor, obstacles: floor.obstacles.filter((item) => item.id !== obstacle.id) });
+              onSelect([]);
+            }}
+          />
+        </header>
         <label className="plan-text-field">
           <span>نوع مانع</span>
           <select
@@ -284,14 +350,11 @@ export function PlanInspector({
           <input type="checkbox" checked={obstacle.blocksView} onChange={(event) => update({ blocksView: event.target.checked })} />
           <span>جلوی دید دوربین را می‌گیرد</span>
         </label>
-        <button type="button" className="plan-delete" onClick={() => { onFloorChange({ ...floor, obstacles: floor.obstacles.filter((item) => item.id !== obstacle.id) }); onSelect(null); }}>
-          <Trash2 size={15} aria-hidden="true" />حذف مانع
-        </button>
       </aside>
     );
   }
 
-  const camera = floor.cameras.find((item) => item.id === selection.id);
+  const camera = floor.cameras.find((item) => item.id === sole.id);
   if (!camera) return null;
 
   const update = (patch: Partial<typeof camera>) =>
@@ -301,65 +364,54 @@ export function PlanInspector({
   const coverage = computeCameraCoverage(camera, collectOccluders(floor.walls, floor.obstacles, floor.doors), 48);
   const fov = cameraFovDeg(camera);
 
-  if (camera.definitionId) {
-    const housing = camera.housing === "bullet" ? "بولت"
-      : camera.housing === "dome" ? "دام"
-        : camera.housing === "ptz" ? "چرخشی PTZ" : "تورت";
-    const features = [
-      camera.features?.microphone ? "میکروفون" : "",
-      camera.features?.colorNightVision ? "دید در شب رنگی" : "",
-      camera.features?.weatherproof ? "مقاوم فضای باز" : ""
-    ].filter(Boolean);
-    const behavior = housingBehavior[camera.housing ?? "turret"];
-
-    return (
-      <aside className="plan-inspector plan-defined-camera-inspector">
-        <header><Camera size={17} aria-hidden="true" /><strong>{camera.name}</strong></header>
-        <div className="plan-defined-camera-group"><span>گروه</span><strong>{camera.groupName || "بدون گروه"}</strong></div>
-        <div className={`plan-camera-housing-note is-${camera.housing ?? "turret"}`}>
-          <Compass size={16} aria-hidden="true" />
-          <div><strong>{behavior.title}</strong><span>{behavior.description}</span></div>
-        </div>
-        <p>مشخصات فنی این دوربین از گروه تعریف‌شده می‌آید و در مرحله جانمایی قفل است.</p>
-        <div className="plan-field-grid">
-          <div className="plan-field-readout"><span>نوع بدنه</span><strong>{housing}</strong></div>
-          <div className="plan-field-readout"><span>هدف</span><strong>{taskLabels[camera.goal]}</strong></div>
-          <div className="plan-field-readout"><span>رزولوشن</span><strong>{camera.optics.megapixel} MP</strong></div>
-          <div className="plan-field-readout"><span>لنز</span><strong>{camera.optics.focalMm} mm</strong></div>
-          <div className="plan-field-readout"><span>ارتفاع نصب</span><strong>{camera.optics.mountHeightM} متر</strong></div>
-          <div className="plan-field-readout"><span>برد مؤثر</span><strong>{camera.optics.maxRangeM} متر</strong></div>
-        </div>
-        {features.length > 0 ? <div className="plan-camera-feature-chips">{features.map((feature) => <span key={feature}>{feature}</span>)}</div> : null}
-        <NumberField
-          label={camera.housing === "ptz" ? "جهت اولیه گشت PTZ" : "جهت دوربین"}
-          unit="درجه"
-          value={camera.yawDeg}
-          min={0}
-          max={359}
-          step={5}
-          onChange={(value) => update({ yawDeg: value })}
-        />
-        <div className="plan-dori-readout">
-          <div><span>زاویه دید</span><strong>{fov.toFixed(1)}°</strong></div>
-          <div><span>کشف</span><strong>{formatFa(coverage.doriDistances.detect, 1)} m</strong></div>
-          <div><span>بازشناسی</span><strong>{formatFa(coverage.doriDistances.recognize, 1)} m</strong></div>
-          <div><span>شناسایی</span><strong>{formatFa(coverage.doriDistances.identify, 1)} m</strong></div>
-        </div>
-        <button type="button" className="plan-delete" onClick={() => { onFloorChange({ ...floor, cameras: floor.cameras.filter((item) => item.id !== camera.id) }); onSelect(null); }}>
-          <Trash2 size={15} aria-hidden="true" />برداشتن از نقشه
-        </button>
-      </aside>
-    );
-  }
+  const features = camera.features ?? { microphone: false, colorNightVision: false, weatherproof: false };
+  const updateFeatures = (patch: Partial<typeof features>) => update({ features: { ...features, ...patch } });
+  const housing = camera.housing ?? "turret";
+  const behavior = housingBehavior[housing];
 
   return (
     <aside className="plan-inspector">
-      <header><Camera size={17} aria-hidden="true" /><strong>دوربین</strong></header>
+      <header>
+        <Camera size={17} aria-hidden="true" /><strong>مشخصات دوربین</strong>
+        <DeleteAction
+          label="حذف دوربین"
+          onDelete={() => {
+            onFloorChange({ ...floor, cameras: floor.cameras.filter((item) => item.id !== camera.id) });
+            onSelect([]);
+          }}
+        />
+      </header>
 
       <label className="plan-text-field">
         <span>نام</span>
         <input value={camera.name} onChange={(event) => update({ name: event.target.value })} />
       </label>
+
+      {camera.groupName ? (
+        <div className="plan-defined-camera-group"><span>نوع دستگاه</span><strong>{camera.groupName}</strong></div>
+      ) : null}
+
+      {/* Body style first: it changes how the camera mounts and how the coverage reads. */}
+      <fieldset className="plan-housing-picker">
+        <legend>شکل و بدنه دوربین</legend>
+        <div>
+          {(Object.keys(housingLabels) as CameraHousing[]).map((value) => (
+            <button
+              key={value}
+              type="button"
+              className={housing === value ? "active" : ""}
+              onClick={() => update({ housing: value })}
+            >
+              {housingLabels[value]}
+            </button>
+          ))}
+        </div>
+      </fieldset>
+
+      <div className={`plan-camera-housing-note is-${housing}`}>
+        <Compass size={16} aria-hidden="true" />
+        <div><strong>{behavior.title}</strong><span>{behavior.description}</span></div>
+      </div>
 
       <label className="plan-text-field">
         <span>هدف نظارتی</span>
@@ -385,8 +437,17 @@ export function PlanInspector({
 
       <NumberField label="فاصله کانونی" unit="میلی‌متر" value={camera.optics.focalMm} min={1} max={80} step={0.5} onChange={(value) => updateOptics({ focalMm: value })} />
       <NumberField label="ارتفاع نصب" unit="متر" value={camera.optics.mountHeightM} min={1} max={15} step={0.1} onChange={(value) => updateOptics({ mountHeightM: value })} />
-      <NumberField label="زاویه چرخش" unit="درجه" value={camera.yawDeg} min={0} max={359} step={5} onChange={(value) => update({ yawDeg: value })} />
+      <NumberField
+        label={housing === "ptz" ? "جهت اولیه گشت PTZ" : "زاویه چرخش"}
+        unit="درجه"
+        value={camera.yawDeg}
+        min={0}
+        max={359}
+        step={5}
+        onChange={(value) => update({ yawDeg: value })}
+      />
       <NumberField label="بُرد مؤثر" unit="متر" value={camera.optics.maxRangeM} min={2} max={120} step={1} onChange={(value) => updateOptics({ maxRangeM: value })} />
+      <NumberField label="برد دید در شب" unit="متر" value={camera.optics.irRangeM} min={0} max={200} step={5} onChange={(value) => updateOptics({ irRangeM: value })} />
 
       <button
         type="button"
@@ -399,18 +460,159 @@ export function PlanInspector({
         تنظیم خودکار لنز برای «{taskLabels[camera.goal]}»
       </button>
 
+      <fieldset className="plan-feature-picker">
+        <legend>ویژگی‌ها</legend>
+        <label className="plan-check">
+          <input type="checkbox" checked={features.microphone} onChange={(event) => updateFeatures({ microphone: event.target.checked })} />
+          <span>میکروفون داخلی</span>
+        </label>
+        <label className="plan-check">
+          <input type="checkbox" checked={features.colorNightVision} onChange={(event) => updateFeatures({ colorNightVision: event.target.checked })} />
+          <span>دید در شب رنگی</span>
+        </label>
+        <label className="plan-check">
+          <input
+            type="checkbox"
+            checked={features.weatherproof}
+            onChange={(event) => updateFeatures({ weatherproof: event.target.checked })}
+          />
+          <span>مقاوم فضای باز</span>
+        </label>
+        <label className="plan-check">
+          <input
+            type="checkbox"
+            checked={Boolean(camera.outdoor)}
+            onChange={(event) => update({ outdoor: event.target.checked })}
+          />
+          <span>نصب در فضای باز</span>
+        </label>
+      </fieldset>
+
       <div className="plan-dori-readout">
         <div><span>زاویه دید</span><strong>{fov.toFixed(1)}°</strong></div>
-        <div><span>کشف</span><strong>{formatFa(coverage.doriDistances.detect, 1)} m</strong></div>
-        <div><span>مشاهده</span><strong>{formatFa(coverage.doriDistances.observe, 1)} m</strong></div>
-        <div><span>بازشناسی</span><strong>{formatFa(coverage.doriDistances.recognize, 1)} m</strong></div>
-        <div><span>شناسایی</span><strong>{formatFa(coverage.doriDistances.identify, 1)} m</strong></div>
+        {coverage.bands.map((band) => (
+          <div key={band.key} className={band.polygon.length >= 3 ? "" : "is-hidden-band"}>
+            <span><i style={{ background: band.color }} />{band.label}</span>
+            <strong>{formatFa(band.distanceM, 1)} m</strong>
+          </div>
+        ))}
       </div>
 
-      <button type="button" className="plan-delete" onClick={() => { onFloorChange({ ...floor, cameras: floor.cameras.filter((item) => item.id !== camera.id) }); onSelect(null); }}>
-        <Trash2 size={15} aria-hidden="true" />حذف دوربین
-      </button>
+      {coverage.truncatedByRange ? (
+        <div className="plan-range-warning">
+          <div>
+            <strong>{formatFa(coverage.visibleBandCount)} ناحیه از ۴ ناحیه نمایش داده می‌شود</strong>
+            <span>
+              بُرد مؤثر ({formatFa(camera.optics.maxRangeM, 1)} متر) کوتاه‌تر از فاصله کشف
+              ({formatFa(coverage.doriDistances.detect, 1)} متر) است، بنابراین نواحی بیرونی حذف شده‌اند.
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => updateOptics({ maxRangeM: Math.round(Math.min(120, coverage.doriDistances.detect) * 10) / 10 })}
+          >
+            تنظیم بُرد روی فاصله کشف
+          </button>
+        </div>
+      ) : null}
+
+      <p className="plan-inspector-note">تنظیمات کدک، نرخ فریم و بیت‌ریت این دوربین در مرحله بعد مشخص می‌شود.</p>
     </aside>
+  );
+}
+
+function MultiSelectionPanel({
+  floor,
+  selection,
+  onFloorChange,
+  onSelect
+}: {
+  floor: FloorPlan;
+  selection: PlanSelection;
+  onFloorChange: (floor: FloorPlan) => void;
+  onSelect: (selection: PlanSelection) => void;
+}) {
+  const groups = summariseSelection(selection);
+  const cameraCount = selection.filter((item) => item.kind === "camera").length;
+  const wallCount = selection.filter((item) => item.kind === "wall").length;
+
+  const removeOne = (ref: PlanSelectionRef) => {
+    onFloorChange(deleteSelection(floor, [ref]));
+    onSelect(selection.filter((item) => !(item.kind === ref.kind && item.id === ref.id)));
+  };
+
+  const removeAll = () => {
+    onFloorChange(deleteSelection(floor, selection));
+    onSelect([]);
+  };
+
+  const removeKind = (kind: PlanSelectionRef["kind"]) => {
+    const targets = selection.filter((item) => item.kind === kind);
+    onFloorChange(deleteSelection(floor, targets));
+    onSelect(selection.filter((item) => item.kind !== kind));
+  };
+
+  return (
+    <aside className="plan-inspector plan-multi-inspector">
+      <header>
+        <Layers size={17} aria-hidden="true" />
+        <strong>{formatFa(selection.length)} آیتم انتخاب شد</strong>
+        <button type="button" className="plan-clear-selection" onClick={() => onSelect([])} title="لغو انتخاب" aria-label="لغو انتخاب">
+          <X size={15} aria-hidden="true" />
+        </button>
+      </header>
+
+      <div className="plan-multi-summary">
+        {groups.map((group) => (
+          <button key={group.kind} type="button" onClick={() => removeKind(group.kind)} title={`حذف همه ${group.label}`}>
+            <span>{group.label}</span>
+            <strong>{formatFa(group.count)}</strong>
+            <Trash2 size={12} aria-hidden="true" />
+          </button>
+        ))}
+      </div>
+
+      {wallCount > 0 ? (
+        <p className="plan-inspector-note">حذف دیوار، در و پنجره‌های روی آن را هم پاک می‌کند.</p>
+      ) : null}
+
+      <div className="plan-multi-list">
+        {selection.map((ref) => (
+          <div key={`${ref.kind}-${ref.id}`}>
+            <span className={`plan-multi-dot is-${ref.kind}`} aria-hidden="true" />
+            <span>{describeElement(floor, ref)}</span>
+            <button type="button" onClick={() => removeOne(ref)} title="حذف این آیتم" aria-label="حذف این آیتم">
+              <Trash2 size={13} aria-hidden="true" />
+            </button>
+          </div>
+        ))}
+      </div>
+
+      <button type="button" className="plan-delete-all" onClick={removeAll}>
+        <Trash2 size={15} aria-hidden="true" />
+        حذف هر {formatFa(selection.length)} آیتم انتخاب‌شده
+      </button>
+
+      {cameraCount > 0 ? (
+        <p className="plan-inspector-note">
+          برای ویرایش مشخصات یک دوربین، فقط همان را انتخاب کنید.
+        </p>
+      ) : null}
+    </aside>
+  );
+}
+
+/**
+ * Destructive action pinned to a panel header.
+ *
+ * Kept at the top so it stays reachable without scrolling past a long property list,
+ * and rendered as an icon so it never competes with the panel title for attention.
+ */
+function DeleteAction({ label, onDelete }: { label: string; onDelete: () => void }) {
+  return (
+    <button type="button" className="plan-delete" onClick={onDelete} title={label} aria-label={label}>
+      <Trash2 size={15} aria-hidden="true" />
+    </button>
   );
 }
 

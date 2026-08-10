@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test, { describe } from "node:test";
-import { castRay, collectRightAngleCorners, convexHull, findRightAngleCorner, floorAreaM2, isAxisAlignedSegment, polygonArea, pointInPolygon, projectPointToWall, snapWallToEqualParallel, traceWallLoop } from "@/src/lib/planner/geometry";
+import { castRay, collectOccluders, collectRightAngleCorners, convexHull, findRightAngleCorner, floorAreaM2, isAxisAlignedSegment, polygonArea, pointInPolygon, projectPointToWall, snapWallToEqualParallel, traceWallLoop } from "@/src/lib/planner/geometry";
 import { cameraFovDeg, computeCameraCoverage, ppmAtDistance } from "@/src/lib/planner/coverage";
 import { defaultCameraOptics, duplicateFloor, createFloor } from "@/src/domain/planner/types";
 
@@ -98,6 +98,40 @@ describe("plan geometry", () => {
   });
 });
 
+describe("openings and glazing", () => {
+  const hostWall = wall("host", 0, -5, 0, 5);
+  const opening = (id, type) => ({
+    id, wallId: "host", type, offset: 0.5, widthM: 2, heightM: 1.4, sillHeightM: type === "window" ? 0.9 : 0, hinge: "start", openAngleDeg: 45
+  });
+
+  test("a doorway is cut out of the wall", () => {
+    const segments = collectOccluders([hostWall], [], [opening("d", "door")]);
+    // Two stubs either side of the opening rather than one continuous wall.
+    assert.equal(segments.length, 2);
+    const reach = castRay({ x: -4, z: 0 }, 0, 20, segments);
+    assert.equal(reach, 20, "a camera should see straight through an open doorway");
+  });
+
+  test("a window is cosmetic and never opens the wall", () => {
+    const segments = collectOccluders([hostWall], [], [opening("w", "window")]);
+    assert.equal(segments.length, 1, "the wall stays whole");
+    assert.ok(castRay({ x: -4, z: 0 }, 0, 20, segments) < 5, "the wall still blocks");
+  });
+
+  test("a glass partition lets the view through along its whole length", () => {
+    const glass = { ...wall("glass", 0, -5, 0, 5), blocksView: false, thicknessM: 0.06 };
+    const segments = collectOccluders([glass], [], []);
+    assert.equal(segments.length, 0, "glazing contributes no occluder");
+    assert.equal(castRay({ x: -4, z: 0 }, 0, 20, segments), 20);
+  });
+
+  test("a window on a glass partition changes nothing", () => {
+    const glass = { ...wall("host", 0, -5, 0, 5), blocksView: false };
+    const segments = collectOccluders([glass], [], [opening("w", "window")]);
+    assert.equal(segments.length, 0);
+  });
+});
+
 describe("ray casting", () => {
   const segments = [{ a: { x: 5, z: -5 }, b: { x: 5, z: 5 }, heightM: 3 }];
 
@@ -151,6 +185,66 @@ describe("camera coverage", () => {
     const far = ppmAtDistance(2560, 65.5, 20);
     assert.ok(near > far);
     assert.ok(Math.abs(near / far - 4) < 0.05, "density should be inversely proportional to distance");
+  });
+
+  test("all four DORI zones are drawn for a normally-ranged camera", () => {
+    // 4MP / 4mm gives a detect distance near 80 m, so a 90 m range clears every band.
+    const wide = { ...camera, optics: { ...camera.optics, maxRangeM: 90 } };
+    const coverage = computeCameraCoverage(wide, [], 64);
+    const visible = coverage.bands.filter((band) => band.polygon.length >= 3);
+    assert.equal(visible.length, 4, `expected 4 zones, got ${visible.length}`);
+    assert.equal(coverage.truncatedByRange, false);
+  });
+
+  test("zones are disjoint rings, not stacked fans", () => {
+    const ringSumFor = (maxRangeM) => {
+      const coverage = computeCameraCoverage({ ...camera, optics: { ...camera.optics, maxRangeM } }, [], 64);
+      const rings = coverage.bands.reduce(
+        (sum, band) => sum + (band.polygon.length >= 3 ? polygonArea(band.polygon) : 0),
+        0
+      );
+      return { rings, fan: polygonArea(coverage.polygon), coverage };
+    };
+
+    // Cut the fan at the detect distance: every part of it then belongs to exactly one
+    // zone, so the rings must add up to the fan and no more. Nested fans would roughly
+    // double this, since each inner zone would be counted again inside the outer ones.
+    const detect = ringSumFor(90).coverage.doriDistances.detect;
+    const exact = ringSumFor(detect);
+    assert.ok(Math.abs(exact.rings / exact.fan - 1) < 0.02,
+      `rings should tile the fan once, got ratio ${(exact.rings / exact.fan).toFixed(3)}`);
+
+    // Past the detect distance the view is below every DORI grade, so the extra area is
+    // deliberately unowned — the rings must not stretch to fill it.
+    const longer = ringSumFor(90);
+    assert.ok(longer.rings < longer.fan, "no zone may claim ground below detect grade");
+    assert.ok(Math.abs(longer.rings - exact.rings) < exact.rings * 0.02,
+      "a longer range must not change the graded zones themselves");
+  });
+
+  test("each ring starts where the previous one ends", () => {
+    const wide = { ...camera, optics: { ...camera.optics, maxRangeM: 90 } };
+    const { bands } = computeCameraCoverage(wide, [], 32);
+    for (let index = 1; index < bands.length; index += 1) {
+      assert.ok(Math.abs(bands[index].innerDistanceM - bands[index - 1].outerDistanceM) < 1e-6,
+        `gap between ${bands[index - 1].key} and ${bands[index].key}`);
+    }
+    assert.equal(bands[0].innerDistanceM, 0, "the tightest zone must start at the lens");
+  });
+
+  test("a short effective range drops outer zones and says so", () => {
+    const short = { ...camera, optics: { ...camera.optics, maxRangeM: 6 } };
+    const coverage = computeCameraCoverage(short, [], 32);
+    const visible = coverage.bands.filter((band) => band.polygon.length >= 3);
+    assert.ok(visible.length < 4, "a 6 m range cannot reach the detect distance");
+    assert.equal(coverage.truncatedByRange, true, "the missing zones must be reported");
+  });
+
+  test("a PTZ sweep still produces all four zones", () => {
+    const ptz = { ...camera, housing: "ptz", optics: { ...camera.optics, maxRangeM: 90 } };
+    const coverage = computeCameraCoverage(ptz, [], 64);
+    assert.equal(coverage.coverageMode, "ptz-patrol");
+    assert.equal(coverage.bands.filter((band) => band.polygon.length >= 3).length, 4);
   });
 
   test("walls clip the coverage polygon", () => {
