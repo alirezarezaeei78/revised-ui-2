@@ -659,7 +659,7 @@ export function FloorPlanDesigner({
             }}
             title="چیدمان همه طبقات روی یکدیگر"
           >
-            <Building2 size={16} aria-hidden="true" /><span>پیش‌نمایش ساختمان</span>
+            <Building2 size={16} aria-hidden="true" /><span>ساختمان</span>
           </button>
           </div>
           <span className="plan-ribbon-label">نمایش</span>
@@ -698,34 +698,39 @@ export function FloorPlanDesigner({
         </section>
 
         <div className="plan-ribbon-quick plan-history-tools" dir="ltr" aria-label="دسترسی سریع">
-          <button
-            type="button"
-            disabled={historyState.past === 0}
-            onClick={undo}
-            title="واگرد (Ctrl+Z)"
-            aria-label="واگرد"
-          >
-            <Undo2 size={16} aria-hidden="true" /><span>Undo</span>
-          </button>
-          <button
-            type="button"
-            disabled={historyState.future === 0}
-            onClick={redo}
-            title="از نو (Ctrl+Y)"
-            aria-label="از نو"
-          >
-            <Redo2 size={16} aria-hidden="true" /><span>Redo</span>
-          </button>
+          <div className="plan-history-actions">
+            <button
+              type="button"
+              disabled={historyState.past === 0}
+              onClick={undo}
+              title="واگرد (Ctrl+Z)"
+              aria-label="واگرد"
+            >
+              <Undo2 size={16} aria-hidden="true" /><span>Undo</span>
+            </button>
+            <button
+              type="button"
+              disabled={historyState.future === 0}
+              onClick={redo}
+              title="از نو (Ctrl+Y)"
+              aria-label="از نو"
+            >
+              <Redo2 size={16} aria-hidden="true" /><span>Redo</span>
+            </button>
+          </div>
           {mode === "environment" ? (
             <button
               type="button"
               dir="rtl"
-              className={showAdvancedElements ? "plan-advanced-toggle active" : "plan-advanced-toggle"}
+              className={showAdvancedElements ? "plan-advanced-switch is-active" : "plan-advanced-switch"}
               onClick={() => setShowAdvancedElements((value) => !value)}
               aria-pressed={showAdvancedElements}
               title="نمایش یا پنهان‌سازی دسته‌های تخصصی المان‌ها"
             >
-              <Sparkles size={16} aria-hidden="true" /><span>پیشرفته</span>
+              <span className="plan-advanced-switch-copy">
+                <Sparkles size={15} aria-hidden="true" /><span>پیشرفته</span>
+              </span>
+              <span className="plan-advanced-switch-track" aria-hidden="true"><i /></span>
             </button>
           ) : null}
         </div>

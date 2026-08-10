@@ -229,6 +229,11 @@ test("the compact ribbon keeps essential assets visible and gates advanced categ
   for (const group of ["vehicle", "structure", "tree"]) assert.equal(advanced.includes(`group="${group}"`), false, `${group} must not be duplicated in advanced assets`);
   assert.ok(source.includes('useState(false);'));
   assert.ok(source.includes('mode === "environment" && showAdvancedElements'));
+  assert.ok(source.includes('className="plan-history-actions"'));
+  assert.ok(source.includes('"plan-advanced-switch is-active"'));
+  assert.ok(source.includes('className="plan-advanced-switch-track"'));
+  assert.equal(source.includes("plan-advanced-toggle"), false);
+  assert.ok(source.includes('<span>ساختمان</span>'));
   assert.equal(ribbon.includes("پوشش DORI"), false, "DORI must not consume main-ribbon space");
   assert.ok(source.includes('className={showCoverage ? "plan-coverage-toggle active" : "plan-coverage-toggle"}'));
 });

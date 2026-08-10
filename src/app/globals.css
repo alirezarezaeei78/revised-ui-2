@@ -7726,7 +7726,7 @@ h3 {
 
 .plan-toolbar {
   display: grid;
-  grid-template-columns: minmax(270px, 1.2fr) minmax(138px, .54fr) minmax(138px, .56fr) minmax(122px, .5fr) minmax(158px, .62fr);
+  grid-template-columns: minmax(346px, 1.45fr) minmax(174px, .72fr) minmax(174px, .72fr) minmax(146px, .62fr) 112px;
   grid-template-areas: "drawing essentials view settings history";
   align-items: stretch;
   gap: 6px;
@@ -8044,11 +8044,16 @@ h3 {
   gap: 4px;
 }
 
+.plan-ribbon-drawing .plan-tool-group,
+.plan-ribbon-essentials .plan-tool-group,
+.plan-ribbon-view .plan-tool-group,
+.plan-ribbon-settings .plan-tool-group { justify-content: space-evenly; }
+
 .plan-ribbon-section .plan-tool-group > button {
   flex-direction: column;
   justify-content: center;
-  width: 44px;
-  min-width: 44px;
+  width: 52px;
+  min-width: 52px;
   height: 58px;
   min-height: 58px;
   padding: 5px 4px;
@@ -8058,8 +8063,8 @@ h3 {
 }
 
 .plan-ribbon-essentials .plan-object-tool-trigger {
-  width: 40px;
-  min-width: 40px;
+  width: 52px;
+  min-width: 52px;
   height: 58px;
   min-height: 58px;
   padding-inline: 2px;
@@ -8125,9 +8130,74 @@ h3 {
   padding: 3px;
 }
 
-.plan-history-tools { grid-area: history; margin-inline-start: 0; }
-.plan-history-tools button { min-width: 39px; padding-inline: 6px; font-size: 9px; }
-.plan-history-tools .plan-advanced-toggle { min-width: 72px; direction: rtl; }
+.plan-history-tools {
+  display: grid;
+  grid-area: history;
+  grid-template-rows: auto auto;
+  align-content: center;
+  align-self: stretch;
+  width: 100%;
+  margin-inline-start: 0;
+  gap: 6px;
+  padding: 4px;
+}
+.plan-history-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  min-width: 0;
+}
+.plan-history-actions button {
+  width: 100%;
+  min-width: 0;
+  padding-inline: 4px;
+  font-size: 8.5px;
+}
+.plan-history-tools .plan-advanced-switch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-width: 0;
+  min-height: 29px;
+  padding: 4px 6px;
+  color: #496b7c;
+  background: #fff;
+  border-color: #d3e3eb;
+  font-size: 8.5px;
+  direction: rtl;
+}
+.plan-advanced-switch-copy { display: inline-flex; align-items: center; min-width: 0; gap: 3px; font-weight: 900; }
+.plan-advanced-switch-copy svg { flex: 0 0 auto; color: #55798b; }
+.plan-advanced-switch-track {
+  position: relative;
+  flex: 0 0 auto;
+  width: 32px;
+  height: 18px;
+  background: #cbd9df;
+  border: 1px solid #b8cad3;
+  border-radius: 999px;
+  transition: background .18s ease, border-color .18s ease;
+}
+.plan-advanced-switch-track i {
+  position: absolute;
+  inset-block-start: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  background: #fff;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(25, 64, 84, .3);
+  transition: transform .18s ease;
+}
+.plan-history-tools .plan-advanced-switch.is-active {
+  color: #116891;
+  background: #edf8fc;
+  border-color: #9dcee3;
+}
+.plan-advanced-switch.is-active .plan-advanced-switch-copy svg { color: var(--accent); }
+.plan-advanced-switch.is-active .plan-advanced-switch-track { background: var(--accent); border-color: var(--accent); }
+.plan-advanced-switch.is-active .plan-advanced-switch-track i { transform: translateX(14px); }
 .plan-element-strip.is-advanced { animation: planAdvancedReveal .18s ease-out; }
 @keyframes planAdvancedReveal {
   from { opacity: 0; transform: translateY(-5px); }
@@ -9284,7 +9354,7 @@ h3 {
 .plan-metrics { display: flex; flex-wrap: wrap; gap: 12px; font-size: 11px; color: var(--muted); }
 .plan-metrics strong { color: var(--accent-strong); }
 
-@media (max-width: 860px) {
+@media (max-width: 980px) {
   .plan-toolbar {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     grid-template-areas:
@@ -9345,7 +9415,7 @@ h3 {
   }
   .plan-ribbon-section,
   .plan-history-tools { justify-self: stretch; }
-  .plan-history-tools { justify-content: center; }
+  .plan-history-tools { align-content: center; }
   .plan-asset-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .plan-asset-grid .plan-object-tool-menu:nth-child(4n) .plan-object-tool-popover { inset-inline-start: 0; inset-inline-end: auto; }
   .plan-asset-grid .plan-object-tool-menu:nth-child(3n) .plan-object-tool-popover { inset-inline-start: auto; inset-inline-end: 0; }
