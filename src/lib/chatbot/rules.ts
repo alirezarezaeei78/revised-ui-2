@@ -18,6 +18,9 @@ export type RuleMatch = { intent: ChatIntent; reason: string };
 
 type Rule = { intent: ChatIntent; reason: string; test: (text: string, slots: Slots) => boolean };
 
+const productNoun = /دوربین|کمرا|camera|nvr|ان ?وی ?ار|dvr|دی ?وی ?ار|xvr|اکس ?وی ?ار|سوئیچ|سوییچ|switch|هارد|disk|ups|یو ?پی ?اس|تیاندی|هایک|داهوا|اپتینت|tiandy|hikvision|dahua|optinet|tc-|ds-/;
+const colloquialProductRequest = /(?:بهم|بم|برام)?\s*(?:بگو|بگی|بگین|میگی|بده|پیدا کن|در بیار)|میشه\s*(?:بگی|بگین)|(?:میخوام|میخام|میخواستم|میخاستم|می خواهم|لازم دارم)|(?:چی|کدومو|کدوم)\s*(?:بخرم|بگیرم)|چی\s*(?:داری|دارین|دارید)/;
+
 const rules: Rule[] = [
   {
     intent: "calc_subnet",
@@ -101,6 +104,13 @@ const rules: Rule[] = [
     test: (text) => /چند کانال|چند کاناله|کانال بگیرم|تعداد کانال/.test(text)
   },
   {
+    intent: "recommend_system",
+    reason: "درخواست محاوره‌ای راهکار برای نوع پروژه",
+    test: (text, slots) =>
+      slots.projectType !== undefined &&
+      /چی\s*(?:بخرم|بگیرم|لازمه|لازم دارم)|چه سیستمی|سیستم.*(?:میخوام|میخام|پیشنهاد)|پیشنهاد.*سیستم/.test(text)
+  },
+  {
     intent: "product_compare",
     reason: "مقایسه صریح مدل یا برند محصول",
     test: (text) =>
@@ -118,8 +128,8 @@ const rules: Rule[] = [
     intent: "product_search",
     reason: "درخواست معرفی یا جست‌وجوی محصول با مشخصات",
     test: (text) =>
-      /معرفی|پیشنهاد|موجود|لیست|نشان|نشون|چه مدلی|مدل.*خوب|مدل.*مناسب|چی بخرم|چی بگیرم/.test(text) &&
-      /دوربین|nvr|dvr|سوئیچ|سوییچ|هارد|ups|تیاندی|هایک|داهوا|اپتینت|tiandy|hikvision|dahua|optinet|tc-|ds-/.test(text)
+      productNoun.test(text) &&
+      (/معرفی|پیشنهاد|موجود|لیست|نشان|نشون|چه مدلی|مدل.*خوب|مدل.*مناسب|چی بخرم|چی بگیرم/.test(text) || colloquialProductRequest.test(text))
   },
   {
     intent: "info_codec",

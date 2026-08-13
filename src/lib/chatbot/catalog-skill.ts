@@ -35,7 +35,7 @@ const brandAliases: { pattern: RegExp; brand: string }[] = [
 
 const categoryWords: [RegExp, ProductCategory][] = [
   [/دوربین|کمرا|camera|بولت|دام|توربولت|ptz/, "camera"],
-  [/nvr|dvr|xvr|دستگاه|ضبط|رکوردر|کاناله|کانال/, "recorder"],
+  [/nvr|ان ?وی ?ار|dvr|دی ?وی ?ار|xvr|اکس ?وی ?ار|دستگاه|ضبط|رکوردر|کاناله|کانال/, "recorder"],
   [/سوئیچ|سوییچ|switch|poe|پی ای|پورت/, "switch"],
   [/هارد|hdd|دیسک|storage|ترابایت|سرویلنس|purple|skyhawk/, "storage"],
   [/ups|یو پی اس|برق اضطراری|باتری/, "ups"]
@@ -47,7 +47,9 @@ const stopWords = new Set([
   "بگو", "نشان", "نشون", "بده", "لیست", "موجود", "موجودی", "برای", "یک", "یه", "تا", "از", "با",
   "در", "به", "را", "رو", "و", "چه", "کدوم", "کدام", "بهترین", "ارزان", "ارزون", "گران", "گرون",
   "ترین", "محصول", "محصولات", "مدل", "خرید", "بخرم", "تومان", "تومن", "هزینه", "میشه", "است",
-  "معرفی", "کن", "کنید", "پیشنهاد", "خوب", "مناسب", "مگاپیکسل", "مگاپیکسلی", "مگا", "پیکسل"
+  "معرفی", "کن", "کنید", "پیشنهاد", "خوب", "مناسب", "مگاپیکسل", "مگاپیکسلی", "مگا", "پیکسل",
+  "دونه", "دانه", "عدد", "بهم", "بم", "برام", "بده", "بگی", "بگین", "میگی", "میشه",
+  "میخوام", "میخام", "میخواستم", "میخاستم", "خواستن", "واسه"
 ]);
 
 function detectCategory(text: string): ProductCategory | undefined {
@@ -82,13 +84,14 @@ function buildSearchTerm(text: string, brand?: string): string {
 
 export function parseCatalogRequest(slots: Slots): CatalogRequest {
   const brand = detectBrand(slots.text);
+  const category = detectCategory(slots.text);
   return {
-    category: detectCategory(slots.text),
+    category,
     brand,
     resolutionMp: slots.megapixel,
-    requestedCount: Math.min(4, Math.max(1, Math.floor(slots.cameraCount ?? 1))),
+    requestedCount: Math.min(4, Math.max(1, Math.floor(category === "camera" ? (slots.cameraCount ?? 1) : 1))),
     search: buildSearchTerm(slots.text, brand),
-    wantsRecommendation: /معرفی|پیشنهاد|خوب|مناسب|چی\s*(?:بگیرم|بخرم)|چه\s*مدلی/.test(slots.text)
+    wantsRecommendation: /معرفی|پیشنهاد|خوب|مناسب|(?:چی|کدومو|کدوم)\s*(?:بگیرم|بخرم)|چه\s*مدلی|(?:بهم|بم|برام)?\s*(?:بگو|بگی|بگین|میگی|بده)|میشه\s*(?:بگی|بگین)|(?:میخوام|میخام|میخواستم|میخاستم|می خواهم)/.test(slots.text)
   };
 }
 

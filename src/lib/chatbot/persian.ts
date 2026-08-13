@@ -118,6 +118,9 @@ const lexicalSynonyms: Record<string, string> = {
   "دوربینام": "دوربین",
   "میخوام": "خواستن",
   "میخام": "خواستن",
+  "میخواستم": "خواستن",
+  "میخاستم": "خواستن",
+  "واسه": "برای",
   "بخرم": "خرید",
   "بگیرم": "خرید",
   "نگهداری": "آرشیو",
@@ -244,7 +247,7 @@ export function charNgrams(input: string, size = 3): string[] {
 }
 
 const numberWords: Record<string, number> = {
-  صفر: 0, یک: 1, دو: 2, سه: 3, چهار: 4, پنج: 5, شش: 6, شیش: 6, هفت: 7, هشت: 8, نه: 9,
+  صفر: 0, یک: 1, یه: 1, دو: 2, سه: 3, چهار: 4, پنج: 5, شش: 6, شیش: 6, هفت: 7, هشت: 8, نه: 9,
   ده: 10, یازده: 11, دوازده: 12, سیزده: 13, چهارده: 14, پانزده: 15, پونزده: 15, شانزده: 16,
   هفده: 17, هجده: 18, نوزده: 19, بیست: 20, "سی": 30, چهل: 40, پنجاه: 50, شصت: 60,
   هفتاد: 70, هشتاد: 80, نود: 90, صد: 100, دویست: 200, سیصد: 300, چهارصد: 400, پانصد: 500,
@@ -281,7 +284,16 @@ export function digitizeNumberWords(input: string): string {
       continue;
     }
 
-    const value = numberWords[token];
+    let value = numberWords[token];
+    if (value === undefined) {
+      // Spoken Persian commonly glues the counting particle to the number:
+      // «دوتا دوربین»، «سه‌تا هارد» or «یه‌دونه NVR».
+      const compactCount = /^(.*?)(?:تا|تایی|دونه|دانه)$/.exec(token);
+      if (compactCount) {
+        const stem = compactCount[1];
+        value = stem === "ی" || stem === "یه" ? 1 : numberWords[stem];
+      }
+    }
     if (value === undefined) {
       flush();
       output.push(token);

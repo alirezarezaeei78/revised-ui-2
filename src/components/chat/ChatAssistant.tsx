@@ -1,8 +1,8 @@
 "use client";
 
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
-import { BrainCircuit, Maximize2, MessageCircle, Minimize2, X } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { Headset, Maximize2, MessageCircle, Minimize2, X } from "lucide-react";
 import { ChatPanel } from "@/src/components/chat/ChatPanel";
 
 /** Routes where a floating widget would get in the way. */
@@ -13,14 +13,19 @@ export function ChatAssistant() {
   const [open, setOpen] = useState(false);
   const [maximized, setMaximized] = useState(false);
 
+  const close = useCallback(() => {
+    setOpen(false);
+    setMaximized(false);
+  }, []);
+
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key === "Escape") close();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [open]);
+  }, [close, open]);
 
   useEffect(() => {
     document.body.classList.toggle("chat-assistant-maximized", open && maximized);
@@ -34,7 +39,7 @@ export function ChatAssistant() {
       <button
         type="button"
         className={open ? "chat-launcher is-open" : "chat-launcher"}
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => open ? close() : setOpen(true)}
         aria-expanded={open}
         aria-label={open ? "بستن دستیار" : "دستیار هوشمند"}
       >
@@ -46,15 +51,15 @@ export function ChatAssistant() {
           className={maximized ? "chat-dock is-maximized" : "chat-dock"}
           role="dialog"
           aria-modal={maximized}
-          aria-label="هوش‌یار؛ دستیار محلی امنیت و شبکه"
+          aria-label="دستیار فنی همیار دوربین"
         >
           <header className="chat-dock-head">
             <span className="chat-dock-avatar">
-              <BrainCircuit size={18} aria-hidden="true" />
+              <Headset size={18} aria-hidden="true" />
             </span>
             <div>
-              <strong>هوش‌یار</strong>
-              <small>مدل محلی دوربین، شبکه و امنیت</small>
+              <strong>دستیار فنی</strong>
+              <small>پاسخ به سؤال‌های دوربین، شبکه و امنیت</small>
             </div>
             <div className="chat-dock-actions">
               <button
@@ -68,10 +73,7 @@ export function ChatAssistant() {
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  setOpen(false);
-                  setMaximized(false);
-                }}
+                onClick={close}
                 aria-label="بستن"
               >
                 <X size={17} aria-hidden="true" />

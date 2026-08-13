@@ -8356,12 +8356,12 @@ h3 {
 
 /* ── Offline assistant ─────────────────────────────────────────────── */
 
-/* Physical `right`, not `inset-inline-end`: the app is RTL, and the widget belongs in
-   the bottom-right corner where visitors expect it regardless of text direction. */
+/* The assistant is deliberately anchored to the physical bottom-left. Using `left`
+   keeps its placement stable even though the application content is RTL. */
 .chat-launcher {
   position: fixed;
   bottom: 24px;
-  right: 24px;
+  left: 24px;
   z-index: 90;
   display: inline-flex;
   align-items: center;
@@ -8383,7 +8383,7 @@ h3 {
 .chat-dock {
   position: fixed;
   bottom: 92px;
-  right: 24px;
+  left: 24px;
   z-index: 91;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -8396,6 +8396,7 @@ h3 {
   box-shadow: 0 24px 56px rgba(23, 52, 74, .24);
   animation: chat-dock-in .18s ease-out;
   transition: inset .22s ease, width .22s ease, height .22s ease, border-radius .22s ease;
+  transform-origin: bottom left;
 }
 
 .chat-dock.is-maximized {
@@ -8745,49 +8746,6 @@ body.chat-assistant-maximized { overflow: hidden; }
 .chat-assumptions ul { margin: 8px 0 0; padding-inline-start: 16px; display: grid; gap: 4px; }
 .chat-assumptions li { color: var(--muted); font-size: 11px; line-height: 1.8; }
 
-.chat-reasoning {
-  overflow: hidden;
-  background: linear-gradient(145deg, #f7f5ff, #f4f9fc);
-  border: 1px solid #ddd9f5;
-  border-radius: 11px;
-}
-
-.chat-reasoning summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 8px 10px;
-  color: #5b4a93;
-  font-size: 10.5px;
-  font-weight: 850;
-  cursor: pointer;
-}
-
-.chat-reasoning summary > span {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.chat-reasoning[open] summary > svg { transform: rotate(180deg); }
-
-.chat-reasoning > div {
-  display: grid;
-  gap: 5px;
-  padding: 0 10px 9px;
-}
-
-.chat-reasoning p {
-  margin: 0;
-  color: var(--muted);
-  font-size: 10px;
-  line-height: 1.75;
-}
-
-.chat-reasoning p strong { color: #4e4772; }
-.chat-reasoning .chat-reasoning-note { color: var(--faint); font-size: 9px; }
-
 .chat-tool-link {
   display: inline-flex;
   align-items: center;
@@ -9010,10 +8968,10 @@ body.chat-assistant-maximized { overflow: hidden; }
 }
 
 @media (max-width: 620px) {
-  .chat-launcher { bottom: 18px; right: 18px; width: 52px; height: 52px; }
+  .chat-launcher { bottom: 18px; left: 18px; width: 52px; height: 52px; }
 
   .chat-dock {
-    right: 16px;
+    left: 16px;
     bottom: 82px;
     width: calc(100vw - 32px);
     height: min(552px, calc(100vh - 112px));

@@ -5,7 +5,6 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import {
   BrainCircuit,
   Check,
-  ChevronDown,
   CornerDownLeft,
   ExternalLink,
   LoaderCircle,
@@ -28,6 +27,7 @@ import {
 } from "@/src/lib/chatbot/local-llm-client";
 import { AssistantModel, type ModelState } from "@/src/lib/chatbot/model";
 import { formatFa } from "@/src/lib/chatbot/persian";
+import { shouldUseLocalLlm } from "@/src/lib/chatbot/response-policy";
 import type { Answer } from "@/src/lib/chatbot/skills";
 
 type Message =
@@ -98,12 +98,15 @@ export function ChatPanel({ variant }: { variant: "floating" | "page" }) {
   useEffect(() => {
     const model = AssistantModel.getInstance();
     const unsubscribe = model.subscribe(setNlpModelState);
-    model.start();
 
     const controller = new AbortController();
     void checkLocalLlm(controller.signal).then((result) => {
+      if (controller.signal.aborted) return;
       setRuntimeState(result.available ? "ready" : "unavailable");
       setModelName(result.model);
+      // Training the browser-side fallback while Ollama is already available wastes
+      // CPU and slows the local LLM. Train only when the language model is offline.
+      if (!result.available) model.start();
     });
 
     return () => {
@@ -152,7 +155,7 @@ export function ChatPanel({ variant }: { variant: "floating" | "page" }) {
       // Catalog lookups and engineering calculations are already exact, grounded
       // answers. Sending them through a generative model only adds latency and gives
       // the model an opportunity to alter a verified model number or calculation.
-      if (shouldAnswerDirectly(fallbackReply, effectiveMessage)) {
+      if (!shouldUseLocalLlm(fallbackReply, effectiveMessage, history.length, reasoningMode)) {
         setPhase("answering");
         setMessages((current) => [...current, {
           id: assistantMessageId,
@@ -220,6 +223,7 @@ export function ChatPanel({ variant }: { variant: "floating" | "page" }) {
       const runtimeUnavailable = error instanceof LocalLlmUnavailableError &&
         ["OLLAMA_OFFLINE", "LOCAL_LLM_UNAVAILABLE"].includes(error.code);
       setRuntimeState(runtimeUnavailable ? "unavailable" : "ready");
+      if (runtimeUnavailable) AssistantModel.getInstance().start();
 
       if (!fallbackReply) fallbackReply = await respond(effectiveMessage);
       const errorReply = fallbackReply;
@@ -383,18 +387,6 @@ async function learnUserMessage(message: string) {
   }
 }
 
-function shouldAnswerDirectly(reply: ChatReply, message: string) {
-  if (/(یادت باشه|یادت باشد|به خاطر بسپار|به یاد بسپار|اسم من|نام من|حافظه.*(?:پاک|نشان)|چه چیزی از من یادت|چی از من یادت|همه چیز را فراموش)/i.test(message)) return false;
-  if (reply.answer.source === "catalog") return true;
-  if (reply.answer.source === "calculation") return !needsGenerativeSynthesis(message);
-  return ["fallback", "greeting", "thanks", "help_menu", "contact"].includes(reply.intent);
-}
-
-function needsGenerativeSynthesis(message: string) {
-  const normalized = message.toLowerCase().replace(/ي/g, "ی").replace(/ك/g, "ک");
-  return /(طراح|معماری|سناریو|پیشنهاد|مقایسه|ریسک|چطور|چگونه|vlan|فایروال|firewall|acl|امن|توپولوژی|trunk|access)/i.test(normalized);
-}
-
 function RuntimeBadge({
   runtimeState,
   modelName,
@@ -488,8 +480,6 @@ function AnswerCard({
         </details>
       ) : null}
 
-      {!streaming ? <ReasoningSummary reply={reply} /> : null}
-
       {href && answer.tool ? (
         <Link className="chat-tool-link" href={href}>
           <ExternalLink size={14} aria-hidden="true" />
@@ -505,33 +495,6 @@ function AnswerCard({
         </div>
       ) : null}
     </div>
-  );
-}
-
-function ReasoningSummary({ reply }: { reply: ChatReply }) {
-  const localLlm = reply.reasoning.runtime?.kind === "local-llm";
-  const mode = reply.reasoning.runtime?.mode;
-  if (reply.answer.source === "system" && reply.intent === "greeting") return null;
-
-  return (
-    <details className="chat-reasoning">
-      <summary>
-        <span><BrainCircuit size={13} aria-hidden="true" /> روش بررسی پاسخ</span>
-        <ChevronDown size={13} aria-hidden="true" />
-      </summary>
-      <div>
-        <p><strong>موتور:</strong> {localLlm ? `مدل زبانی محلی ${reply.reasoning.runtime?.model ?? ""}` : "موتور دانش و محاسبات محلی"}</p>
-        <p><strong>روش:</strong> {localLlm ? "استدلال مدل + بازیابی دانش تخصصی + کنترل خروجی ابزارها" : "تشخیص موضوع + بازیابی مقاله یا اجرای محاسبه قطعی"}</p>
-        {localLlm && mode ? (
-          <p><strong>عمق هوش:</strong> {reasoningModes[mode].label} — {reasoningModes[mode].description}</p>
-        ) : null}
-        {reply.reasoning.runtime?.verified ? <p><strong>کنترل دقت:</strong> پاسخ با چک‌لیست عدد، ادعا، شبکه و تناقض راستی‌آزمایی شده است.</p> : null}
-        {reply.reasoning.slots.length ? (
-          <p><strong>ورودی‌های تشخیص‌داده‌شده:</strong> {reply.reasoning.slots.join("، ")}</p>
-        ) : null}
-        <p className="chat-reasoning-note">زنجیره فکر خصوصی مدل نمایش داده نمی‌شود؛ این بخش فقط روش و مبنای قابل بررسی پاسخ را نشان می‌دهد.</p>
-      </div>
-    </details>
   );
 }
 
@@ -579,7 +542,7 @@ function localLlmReply(
       runtime: {
         kind: deterministic ? "local-nlp" : "local-llm",
         model,
-        thinking: deterministic ? false : mode !== "low",
+        thinking: deterministic ? false : mode === "high",
         mode: deterministic ? undefined : mode,
         verified: deterministic ? true : mode === "high"
       }

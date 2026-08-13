@@ -4,6 +4,7 @@ import { AssistantModel } from "@/src/lib/chatbot/model";
 import { respond } from "@/src/lib/chatbot/engine";
 import { parseCatalogRequest, productSearchSkill } from "@/src/lib/chatbot/catalog-skill";
 import { extractAutomaticMemoryFacts } from "@/src/lib/chatbot/memory-profile";
+import { shouldUseLocalLlm } from "@/src/lib/chatbot/response-policy";
 import { extractSlots } from "@/src/lib/chatbot/slots";
 
 /**
@@ -254,6 +255,39 @@ describe("slot extraction", () => {
   });
 });
 
+describe("colloquial Persian requests", () => {
+  test("understands glued and spoken counting words", () => {
+    assert.equal(extractSlots("یه دونه دوربین بگو").cameraCount, 1);
+    assert.equal(extractSlots("دوتا دوربین تیاندی بگو").cameraCount, 2);
+    assert.equal(extractSlots("سه‌تا دوربین بده").cameraCount, 3);
+  });
+
+  test("routes short spoken product requests to the catalog", async () => {
+    for (const message of [
+      "یه دونه دوربین بگو",
+      "یه دوربین خوب بهم بگو",
+      "دوتا دوربین تیاندی بگو",
+      "میشه یه دوربین مناسب بهم بگی",
+      "یه ان وی ار ۸ کانال میخوام"
+    ]) {
+      const result = await respond(message);
+      assert.equal(result.intent, "product_search", `wrong intent for: ${message}`);
+    }
+  });
+
+  test("keeps recorder channels separate from requested product quantity", () => {
+    const request = parseCatalogRequest(extractSlots("یه ان وی ار ۸ کانال میخوام"));
+    assert.equal(request.category, "recorder");
+    assert.equal(request.requestedCount, 1);
+    assert.equal(request.wantsRecommendation, true);
+  });
+
+  test("routes a casual project request to system design", async () => {
+    assert.equal((await respond("برای مغازه چی بگیرم")).intent, "recommend_system");
+    assert.equal((await respond("واسه مغازه چی لازمه")).intent, "recommend_system");
+  });
+});
+
 describe("automatic user memory", () => {
   test("learns stable identity, role, preference and environment facts", () => {
     const facts = extractAutomaticMemoryFacts(
@@ -268,6 +302,32 @@ describe("automatic user memory", () => {
   test("does not memorize ordinary questions or credentials", () => {
     assert.deepEqual(extractAutomaticMemoryFacts("برای ۲ دوربین چقدر هارد لازم است؟"), []);
     assert.deepEqual(extractAutomaticMemoryFacts("پسورد من abc123 است"), []);
+  });
+});
+
+describe("local LLM response policy", () => {
+  const reply = (source, intent, title = "پاسخ") => ({
+    answer: { source, title, lines: ["پاسخ آزمون"] },
+    intent,
+    confidence: 1,
+    reasoning: { intents: [], articles: [], modelReady: true, slots: [] }
+  });
+
+  test("keeps exact catalog and calculation answers out of the generative model", () => {
+    assert.equal(shouldUseLocalLlm(reply("catalog", "product_search"), "دو دوربین تیاندی معرفی کن", 1, "high"), false);
+    assert.equal(shouldUseLocalLlm(reply("calculation", "calc_storage"), "برای ۱۶ دوربین چقدر هارد لازم است", 1, "high"), false);
+  });
+
+  test("answers simple facts directly but sends diagnosis and high-depth work to the LLM", () => {
+    assert.equal(shouldUseLocalLlm(reply("knowledge", "info_codec"), "فرق H.264 و H.265 چیست؟", 1, "medium"), false);
+    assert.equal(shouldUseLocalLlm(reply("knowledge", "info_troubleshoot"), "دوربین‌ها قطع و وصل می‌شوند؛ علت را مرحله به مرحله عیب‌یابی کن", 1, "medium"), true);
+    assert.equal(shouldUseLocalLlm(reply("knowledge", "info_codec"), "فرق H.264 و H.265 چیست؟", 1, "high"), true);
+  });
+
+  test("uses conversation history for short contextual follow-ups without opening first-turn off-topic questions", () => {
+    const fallback = reply("system", "fallback", "این موضوع خارج از تخصص من است");
+    assert.equal(shouldUseLocalLlm(fallback, "برای حالت قبلی چی؟", 4, "medium"), true);
+    assert.equal(shouldUseLocalLlm(fallback, "قیمت دلار چقدر است؟", 1, "medium"), false);
   });
 });
 
