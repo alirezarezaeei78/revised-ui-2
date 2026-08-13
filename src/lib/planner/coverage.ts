@@ -8,6 +8,7 @@ import {
   floorAreaM2,
   pointInPolygon,
   visibilityFan,
+  visibilityRing,
   type Segment
 } from "@/src/lib/planner/geometry";
 import {
@@ -34,16 +35,34 @@ const targetHeightM: Record<SurveillanceTask, number> = {
   anpr: 0.8
 };
 
+/**
+ * Saturated, well-separated hues.
+ *
+ * The bands no longer overlap, so each can be drawn at full strength instead of relying
+ * on blended translucency — these are chosen to stay distinct against both the light
+ * floor and an uploaded plan image underneath.
+ */
 export const doriLevels = [
-  { key: "detect", label: "کشف", ppm: 25, color: "#ef4444" },
+  { key: "detect", label: "کشف", ppm: 25, color: "#dc2626" },
   { key: "observe", label: "مشاهده", ppm: 62, color: "#f97316" },
-  { key: "recognize", label: "بازشناسی", ppm: 125, color: "#eab308" },
-  { key: "identify", label: "شناسایی", ppm: 250, color: "#16a34a" }
+  { key: "recognize", label: "بازشناسی", ppm: 125, color: "#facc15" },
+  { key: "identify", label: "شناسایی", ppm: 250, color: "#22c55e" }
 ] as const;
 
 export type DoriKey = (typeof doriLevels)[number]["key"];
 
-export type CoverageBand = { key: DoriKey; label: string; ppm: number; color: string; distanceM: number; polygon: Vec2[] };
+export type CoverageBand = {
+  key: DoriKey;
+  label: string;
+  ppm: number;
+  color: string;
+  /** Distance at which this level's pixel density is reached. */
+  distanceM: number;
+  /** Ring bounds actually drawn, after clamping to the camera's effective range. */
+  innerDistanceM: number;
+  outerDistanceM: number;
+  polygon: Vec2[];
+};
 
 export type CameraCoverage = {
   cameraId: string;
@@ -52,6 +71,9 @@ export type CameraCoverage = {
   headingRad: number;
   horizontalPixels: number;
   effectiveRangeM: number;
+  /** True when the effective range stops short of the detect distance, cutting bands. */
+  truncatedByRange: boolean;
+  visibleBandCount: number;
   polygon: Vec2[];
   bands: CoverageBand[];
   doriDistances: Record<DoriKey, number>;
@@ -120,24 +142,48 @@ export function computeCameraCoverage(camera: PlanCamera, occluders: Segment[], 
     identify: distanceForPixelDensity(horizontalPixels, fovDeg, 250)
   } satisfies Record<DoriKey, number>;
 
-  // Bands are drawn innermost first so the tighter, higher-quality zones paint on top.
-  const bands: CoverageBand[] = [...doriLevels]
-    .sort((a, b) => b.ppm - a.ppm)
-    .map((level) => {
-      const bandRange = Math.min(distances[level.key], effectiveRangeM);
-      return {
-        key: level.key,
-        label: level.label,
-        ppm: level.ppm,
-        color: level.color,
-        distanceM: distances[level.key],
-        polygon: bandRange > 0.2
-          ? isPtzPatrol
-            ? radialVisibilityPolygon(camera.position, bandRange, occluders, rays, sightHeightAt)
-            : visibilityFan(camera.position, headingRad, fovRad, bandRange, occluders, rays, sightHeightAt)
-          : []
-      };
+  /*
+   * Each level owns a ring, not a fan reaching back to the lens.
+   *
+   * Nested fans meant identify sat inside recognize inside observe inside detect: four
+   * translucent layers over the same ground, which blended into one wash and let the
+   * widest band paint over the tighter ones. Disjoint rings give four regions that can
+   * each be drawn once, in full colour.
+   */
+  const ordered = [...doriLevels].sort((a, b) => b.ppm - a.ppm);
+  const bands: CoverageBand[] = [];
+  let innerRange = 0;
+
+  for (const level of ordered) {
+    const outerRange = Math.min(distances[level.key], effectiveRangeM);
+    const ringPolygon = outerRange - innerRange > 0.2
+      ? visibilityRing(
+          camera.position,
+          headingRad,
+          isPtzPatrol ? Math.PI * 2 : fovRad,
+          innerRange,
+          outerRange,
+          occluders,
+          rays,
+          sightHeightAt
+        )
+      : [];
+    bands.push({
+      key: level.key,
+      label: level.label,
+      ppm: level.ppm,
+      color: level.color,
+      distanceM: distances[level.key],
+      innerDistanceM: innerRange,
+      outerDistanceM: outerRange,
+      polygon: ringPolygon
     });
+    innerRange = Math.max(innerRange, outerRange);
+  }
+
+  // Flagged on what the user can actually see missing, not on the raw comparison —
+  // a range a rounding step short of the detect distance still draws all four rings.
+  const visibleBandCount = bands.filter((band) => band.polygon.length >= 3).length;
 
   return {
     cameraId: camera.id,
@@ -146,10 +192,18 @@ export function computeCameraCoverage(camera: PlanCamera, occluders: Segment[], 
     headingRad,
     horizontalPixels,
     effectiveRangeM,
+    truncatedByRange: visibleBandCount < doriLevels.length,
+    visibleBandCount,
     polygon,
     bands,
     doriDistances: distances
   };
+}
+
+/** Range at which the image still meets the lowest DORI level; the natural outer edge. */
+export function doriDetectRangeM(megapixel: number, focalMm: number, sensorWidthMm: number): number {
+  const fovDeg = horizontalFovDeg(focalMm, sensorWidthMm);
+  return distanceForPixelDensity(horizontalPixelsForMegapixel(megapixel), fovDeg, 25);
 }
 
 export type FloorCoverage = {

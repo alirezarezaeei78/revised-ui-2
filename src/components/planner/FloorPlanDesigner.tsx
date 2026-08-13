@@ -2,8 +2,28 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Armchair,
+  BedDouble,
+  Blinds,
   BrickWall,
-  Check,
+  Building2,
+  CarFront,
+  ChartNoAxesGantt,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  CookingPot,
+  Factory,
+  Fence,
+  Hotel,
+  Hospital,
+  Shield,
+  GraduationCap,
+  CircleParking,
+  ShoppingBag,
+  Sprout,
+  TreePine,
+  Warehouse,
   Copy,
   Cuboid,
   Camera as CameraIcon,
@@ -16,20 +36,25 @@ import {
   Move3d,
   Plus,
   Ruler,
+  Square,
   Redo2,
   RotateCcw,
   Settings2,
+  Sofa,
   Sparkles,
   TriangleAlert,
   Trash2,
   Undo2,
   Minus
 } from "lucide-react";
+import type { ProjectCameraTemplate } from "@/src/domain/catalog/types";
 import {
   createEmptyPlan,
   createFloor,
+  defaultCameraOptics,
   defaultPlanDefaults,
   duplicateFloor,
+  emptySelection,
   type BuildingPlan,
   type FloorPlan,
   type PlanBackdrop,
@@ -37,6 +62,7 @@ import {
   type PlanSelection,
   type PlanTool,
   type PlanViewMode,
+  type WallDrawMode,
   type Vec2
 } from "@/src/domain/planner/types";
 import { PlanCanvas } from "@/src/components/planner/PlanCanvas";
@@ -48,13 +74,11 @@ import {
   type SmartPlacementReport
 } from "@/src/lib/planner/smart-placement";
 import { formatFa } from "@/src/lib/chatbot/persian";
+import { cameraFromTemplate, createBlankCamera, housingLabels } from "@/src/lib/planner/camera-templates";
+import { obstaclePresets, type ObstacleGroup, type ObstaclePreset } from "@/src/lib/planner/obstacle-presets";
 
-const cameraHousingLabel: Record<PlanCameraDefinition["housing"], string> = {
-  bullet: "بولت",
-  dome: "دام سقفی",
-  turret: "تورت",
-  ptz: "PTZ چرخشی"
-};
+/** Sentinel dropped from the palette when the position does not match a defined type. */
+const BLANK_CAMERA_ID = "__blank__";
 
 /**
  * Site designer.
@@ -74,10 +98,13 @@ export type PlanSummary = {
 /** `mode` decides which tools exist: the environment is drawn first, cameras are placed later. */
 export type DesignerMode = "environment" | "cameras";
 
+type BuildingFloorFilter = "above" | "below" | "all";
+
 const allTools: { id: PlanTool; label: string; icon: typeof MousePointer2; hint: string; modes: DesignerMode[] }[] = [
   { id: "select", label: "انتخاب", icon: MousePointer2, hint: "انتخاب و جابه‌جایی عناصر — دستگیره نارنجی جهت دوربین را می‌چرخاند", modes: ["environment", "cameras"] },
-  { id: "wall", label: "دیوار", icon: BrickWall, hint: "کلیک کنید تا زنجیره دیوار بکشید؛ کلیک راست یا Esc پایان", modes: ["environment"] },
+  { id: "wall", label: "دیوار", icon: BrickWall, hint: "گوشه اول و سپس گوشه مقابل را بزنید تا چهار دیوار مستطیلی رسم شود", modes: ["environment"] },
   { id: "door", label: "در", icon: DoorOpen, hint: "روی یک دیوار کلیک کنید تا در به همان نقطه متصل شود", modes: ["environment"] },
+  { id: "window", label: "پنجره", icon: Blinds, hint: "روی یک دیوار کلیک کنید تا پنجره اضافه شود — شیشه مانع دید دوربین نیست", modes: ["environment"] },
   { id: "obstacle", label: "مانع", icon: Cuboid, hint: "دو نقطه مقابل هم را بزنید", modes: ["environment"] },
   { id: "camera", label: "افزودن دوربین", icon: CameraIcon, hint: "روی نقشه کلیک کنید تا دوربین اضافه شود", modes: ["cameras"] },
   { id: "measure", label: "اندازه‌گیری", icon: Ruler, hint: "دو نقطه را بزنید تا فاصله را ببینید", modes: ["environment", "cameras"] }
@@ -86,13 +113,13 @@ const allTools: { id: PlanTool; label: string; icon: typeof MousePointer2; hint:
 export function FloorPlanDesigner({
   plan: controlledPlan,
   mode = "environment",
-  cameraDefinitions = [],
+  cameraTemplates = [],
   onPlanChange,
   onSummaryChange
 }: {
   plan?: BuildingPlan;
   mode?: DesignerMode;
-  cameraDefinitions?: PlanCameraDefinition[];
+  cameraTemplates?: ProjectCameraTemplate[];
   onPlanChange?: (plan: BuildingPlan) => void;
   onSummaryChange?: (summary: PlanSummary) => void;
 }) {
@@ -104,14 +131,18 @@ export function FloorPlanDesigner({
   );
 
   const [requestedTool, setTool] = useState<PlanTool>("select");
+  const [wallDrawMode, setWallDrawMode] = useState<WallDrawMode>("rectangle");
   /* Derived, not stored: switching mode retires tools like "دیوار", and falling back
      here avoids an effect that would setState during render. */
   const tool: PlanTool = tools.some((item) => item.id === requestedTool)
     ? requestedTool
     : "select";
   const [viewMode, setViewMode] = useState<PlanViewMode>("top");
-  const [selection, setSelection] = useState<PlanSelection>(null);
+  const [previewFocusFloorId, setPreviewFocusFloorId] = useState<string | null>(null);
+  const [buildingFloorFilter, setBuildingFloorFilter] = useState<BuildingFloorFilter>("above");
+  const [selection, setSelection] = useState<PlanSelection>(emptySelection);
   const [showCoverage, setShowCoverage] = useState(true);
+  const [showAdvancedElements, setShowAdvancedElements] = useState(false);
   const [hint, setHint] = useState<string | null>(null);
   const [pendingBackdrop, setPendingBackdrop] = useState<PlanBackdrop | null>(null);
   const [showDefaults, setShowDefaults] = useState(false);
@@ -123,13 +154,25 @@ export function FloorPlanDesigner({
   const [historyState, setHistoryState] = useState({ past: 0, future: 0 });
 
   const activeFloor = plan.floors.find((floor) => floor.id === plan.activeFloorId) ?? plan.floors[0];
+  const activeFloorIndex = plan.floors.findIndex((floor) => floor.id === activeFloor?.id);
+  const referenceFloor = activeFloorIndex > 0 ? plan.floors[activeFloorIndex - 1] : null;
   const designDefaults = { ...defaultPlanDefaults, ...plan.defaults };
-  const placedDefinitionIds = useMemo(
-    () => new Set(plan.floors.flatMap((floor) =>
-      floor.cameras.map((camera) => camera.definitionId).filter((id): id is string => Boolean(id))
-    )),
-    [plan.floors]
-  );
+  const buildingPreviewFloors = useMemo(() => {
+    if (buildingFloorFilter === "all") return plan.floors;
+    if (buildingFloorFilter === "below") return plan.floors.filter((item) => item.elevationM < 0);
+    return plan.floors.filter((item) => item.elevationM >= 0);
+  }, [buildingFloorFilter, plan.floors]);
+  /** How many cameras of each device type are already sited, for the palette counters. */
+  const placedByTemplate = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const floor of plan.floors) {
+      for (const camera of floor.cameras) {
+        const key = camera.templateId;
+        if (key) counts.set(key, (counts.get(key) ?? 0) + 1);
+      }
+    }
+    return counts;
+  }, [plan.floors]);
 
   const publishPlan = useCallback((next: BuildingPlan) => {
     if (onPlanChange) onPlanChange(next);
@@ -162,7 +205,7 @@ export function FloorPlanDesigner({
     if (!previous) return;
     futureRef.current = [...futureRef.current.slice(-99), plan];
     setHistoryState({ past: pastRef.current.length, future: futureRef.current.length });
-    setSelection(null);
+    setSelection(emptySelection);
     publishPlan(previous);
   }, [plan, publishPlan]);
 
@@ -171,7 +214,7 @@ export function FloorPlanDesigner({
     if (!next) return;
     pastRef.current = [...pastRef.current.slice(-99), plan];
     setHistoryState({ past: pastRef.current.length, future: futureRef.current.length });
-    setSelection(null);
+    setSelection(emptySelection);
     publishPlan(next);
   }, [plan, publishPlan]);
 
@@ -200,33 +243,107 @@ export function FloorPlanDesigner({
     commit({ ...plan, floors: plan.floors.map((item) => (item.id === floor.id ? floor : item)) });
   }, [commit, plan]);
 
-  const placeDefinedCamera = useCallback((definitionId: string, position: Vec2) => {
-    const definition = cameraDefinitions.find((item) => item.id === definitionId);
-    if (!definition) {
-      setHint("این دوربین دیگر در فهرست تعریف‌شده وجود ندارد");
-      return;
-    }
-    if (plan.floors.some((floor) => floor.cameras.some((camera) => camera.definitionId === definitionId))) {
-      setHint("این دوربین قبلاً روی نقشه جانمایی شده است");
-      return;
-    }
-    const camera = {
-      id: `cam-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e4).toString(36)}`,
-      definitionId: definition.id,
-      zoneId: definition.zoneId,
-      groupName: definition.groupName,
-      name: definition.name,
-      housing: definition.housing,
-      features: { ...definition.features },
-      position,
-      yawDeg: 0,
-      goal: definition.goal,
-      optics: { ...definition.optics }
+  /**
+   * Adds a preset, either at an explicit drop point or staggered near the plan centre
+   * when it came from a click.
+   */
+  const addPresetObstacle = useCallback((preset: ObstaclePreset, at?: Vec2) => {
+    const planPoints = activeFloor.walls.flatMap((wall) => [wall.a, wall.b]);
+    const center = planPoints.length > 0
+      ? {
+          x: (Math.min(...planPoints.map((point) => point.x)) + Math.max(...planPoints.map((point) => point.x))) / 2,
+          z: (Math.min(...planPoints.map((point) => point.z)) + Math.max(...planPoints.map((point) => point.z))) / 2
+        }
+      : { x: 0, z: 0 };
+    const stagger = (activeFloor.obstacles.length % 5) * 0.5;
+    const obstacle = {
+      id: `obs-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e4).toString(36)}`,
+      label: preset.label,
+      kind: preset.kind,
+      variant: preset.id,
+      center: at ?? { x: center.x + stagger, z: center.z + stagger },
+      widthM: preset.widthM,
+      depthM: preset.depthM,
+      heightM: preset.heightM,
+      rotationDeg: 0,
+      // Preset authors decide whether an element is a sight barrier; forcing `true` here
+      // would have made every lawn and coffee table carve a blind spot.
+      blocksView: preset.blocksView ?? true
     };
+    updateFloor({ ...activeFloor, obstacles: [...activeFloor.obstacles, obstacle] });
+    setTool("select");
+    setSelection([{ kind: "obstacle", id: obstacle.id }]);
+    setViewMode("top");
+    setHint(at
+      ? `${preset.label} اضافه شد؛ با دستگیره نارنجی می‌توانید بچرخانیدش.`
+      : `${preset.label} به مرکز نقشه اضافه شد؛ آن را به محل دلخواه بکشید.`);
+  }, [activeFloor, updateFloor]);
+
+  const dropPresetObstacle = useCallback((presetId: string, position: Vec2) => {
+    const preset = obstaclePresets.find((item) => item.id === presetId);
+    if (!preset) return;
+    addPresetObstacle(preset, position);
+  }, [addPresetObstacle]);
+
+  /**
+   * Device types are reusable: the same type can be dropped as many times as the site
+   * needs, and each drop becomes an independent camera that can then be retuned in place.
+   */
+  const placeTemplateCamera = useCallback((templateId: string, position: Vec2) => {
+    const totalPlaced = plan.floors.reduce((sum, floor) => sum + floor.cameras.length, 0);
+
+    if (templateId === BLANK_CAMERA_ID) {
+      const camera = createBlankCamera(position, totalPlaced + 1, designDefaults.cameraMountHeightM);
+      updateFloor({ ...activeFloor, cameras: [...activeFloor.cameras, camera] });
+      setSelection([{ kind: "camera", id: camera.id }]);
+      setHint("دوربین بدون نوع اضافه شد؛ مشخصات آن را از پنل سمت راست تنظیم کنید");
+      return;
+    }
+
+    const template = cameraTemplates.find((item) => item.id === templateId);
+    if (!template) {
+      setHint("این نوع دستگاه دیگر در فهرست وجود ندارد");
+      return;
+    }
+    const ordinal = (placedByTemplate.get(template.id) ?? 0) + 1;
+    const camera = cameraFromTemplate(template, position, ordinal);
     updateFloor({ ...activeFloor, cameras: [...activeFloor.cameras, camera] });
-    setSelection({ kind: "camera", id: camera.id });
-    setHint(`${definition.name} از گروه «${definition.groupName}» روی نقشه قرار گرفت`);
-  }, [activeFloor, cameraDefinitions, plan.floors, updateFloor]);
+    setSelection([{ kind: "camera", id: camera.id }]);
+    setHint(`${camera.name} روی نقشه قرار گرفت؛ مشخصاتش از پنل سمت راست قابل تغییر است`);
+  }, [activeFloor, cameraTemplates, designDefaults.cameraMountHeightM, placedByTemplate, plan.floors, updateFloor]);
+
+  /**
+   * The optimiser still works in single-use slots, so the remaining quantity of each
+   * device type is expanded into one slot apiece. Placements it returns are rewritten
+   * back to template links afterwards, keeping types reusable everywhere else.
+   */
+  const remainingDefinitions = useMemo<PlanCameraDefinition[]>(() =>
+    cameraTemplates.flatMap((template) => {
+      const remaining = Math.max(0, template.quantity - (placedByTemplate.get(template.id) ?? 0));
+      return Array.from({ length: remaining }, (_, index) => ({
+        id: `${template.id}#${index}`,
+        zoneId: template.id,
+        groupName: template.label,
+        name: `${template.label} ${(placedByTemplate.get(template.id) ?? 0) + index + 1}`,
+        housing: template.housing,
+        goal: template.goal,
+        optics: {
+          ...defaultCameraOptics,
+          megapixel: template.megapixel,
+          sensorWidthMm: template.sensorWidthMm,
+          focalMm: template.focalMm,
+          mountHeightM: template.mountingHeightM,
+          tiltDeg: template.cameraTiltDeg,
+          irRangeM: template.irRangeM,
+          maxRangeM: template.maxRangeM
+        },
+        features: {
+          microphone: template.microphone,
+          colorNightVision: template.colorNightVision,
+          weatherproof: template.weatherproof
+        }
+      }));
+    }), [cameraTemplates, placedByTemplate]);
 
   const runSmartPlacement = () => {
     if (isOptimisingPlacement) return;
@@ -235,12 +352,32 @@ export function FloorPlanDesigner({
     setHint("در حال تحلیل هندسه طبقات، ورودی‌ها، موانع، PPM و نقاط کور...");
     window.requestAnimationFrame(() => {
       window.setTimeout(() => {
-        const result = optimiseCameraPlacement(plan, cameraDefinitions);
+        const raw = optimiseCameraPlacement(plan, remainingDefinitions);
+        const templateStream = new Map(cameraTemplates.map((item) => [item.id, item.stream]));
+        const result = {
+          ...raw,
+          plan: {
+            ...raw.plan,
+            floors: raw.plan.floors.map((floor) => ({
+              ...floor,
+              cameras: floor.cameras.map((camera) => {
+                if (!camera.definitionId?.includes("#")) return camera;
+                const templateId = camera.definitionId.split("#")[0];
+                return {
+                  ...camera,
+                  definitionId: undefined,
+                  templateId,
+                  stream: camera.stream ?? (templateStream.get(templateId) ? { ...templateStream.get(templateId)! } : undefined)
+                };
+              })
+            }))
+          }
+        };
         if (result.report.placed > 0) {
           commit(result.plan);
           setViewMode("top");
           setTool("select");
-          setSelection(null);
+          setSelection(emptySelection);
           setShowCoverage(true);
           setHint(
             `${formatFa(result.report.placed)} دوربین جانمایی شد؛ پوشش برآوردی از `
@@ -268,15 +405,26 @@ export function FloorPlanDesigner({
     const name = `طبقه ${index + 1}`;
     const source = plan.floors[plan.floors.length - 1];
     const floor = copyPrevious && source ? duplicateFloor(source, name, index) : createFloor(name, index);
+    floor.elevationM = source ? source.elevationM + source.heightM : 0;
     commit({ ...plan, floors: [...plan.floors, floor], activeFloorId: floor.id });
-    setSelection(null);
+    setSelection(emptySelection);
+    setPreviewFocusFloorId(null);
+    setViewMode("top");
+    setTool("select");
+    setHint(source ? `خط قرمز محدوده «${source.name}» را نشان می‌دهد؛ طراحی طبقه جدید را داخل آن انجام دهید.` : null);
   };
 
   const removeFloor = (id: string) => {
     if (plan.floors.length <= 1) return;
-    const remaining = plan.floors.filter((floor) => floor.id !== id);
+    let nextElevationM = 0;
+    const remaining = plan.floors.filter((floor) => floor.id !== id).map((floor) => {
+      const normalized = { ...floor, elevationM: nextElevationM };
+      nextElevationM += floor.heightM;
+      return normalized;
+    });
     commit({ ...plan, floors: remaining, activeFloorId: remaining[0].id });
-    setSelection(null);
+    setSelection(emptySelection);
+    setPreviewFocusFloorId(viewMode === "building" ? remaining[0].id : null);
   };
 
   /** Reads the drawing at native size, then hands it to the pointer-based placement flow. */
@@ -298,7 +446,7 @@ export function FloorPlanDesigner({
         });
         setViewMode("top");
         setTool("select");
-        setSelection(null);
+        setSelection(emptySelection);
         setHint("تصویر به ماوس متصل است؛ آن را حرکت دهید و برای جای‌گذاری روی نقشه کلیک کنید");
       };
       image.src = url;
@@ -310,7 +458,7 @@ export function FloorPlanDesigner({
     if (!window.confirm("کل نقشه، طبقات، دیوارها، درها، موانع، دوربین‌ها و تصویر پس‌زمینه پاک شوند؟")) return;
     commit(createEmptyPlan());
     setPendingBackdrop(null);
-    setSelection(null);
+    setSelection(emptySelection);
     setTool("select");
     setViewMode("top");
     setHint("نقشه به حالت اولیه بازگشت");
@@ -347,7 +495,7 @@ export function FloorPlanDesigner({
     setPendingBackdrop({ ...activeFloor.backdrop });
     setViewMode("top");
     setTool("select");
-    setSelection(null);
+    setSelection(emptySelection);
     setHint("تصویر به ماوس متصل است؛ برای ثبت محل جدید روی نقشه کلیک کنید");
   };
 
@@ -355,21 +503,69 @@ export function FloorPlanDesigner({
   const activeTool = tools.find((item) => item.id === tool);
 
   return (
-    <section className="plan-designer">
+    <section className={`plan-designer plan-designer-${mode}`}>
+      <header className="plan-designer-head">
+        <span className="plan-designer-head-icon"><Building2 size={20} aria-hidden="true" /></span>
+        <div>
+          <strong>{mode === "environment" ? "استودیوی طراحی محیط" : "استودیوی جانمایی دوربین"}</strong>
+          <small>
+            {mode === "environment"
+              ? "طبقات، فضاها و تجهیزات را بسازید؛ ابزارها بر اساس کاربرد دسته‌بندی شده‌اند."
+              : "دوربین‌ها را روی نقشه قرار دهید، با کشیدن بدنه جابه‌جا و فقط با دستگیره نارنجی بچرخانید."}
+          </small>
+        </div>
+        <div className="plan-designer-head-tips" aria-label="راهنمای تعامل">
+          <span><MousePointer2 size={13} aria-hidden="true" />کشیدن بدنه: جابه‌جایی</span>
+          <span><RotateCcw size={13} aria-hidden="true" />دستگیره نارنجی: چرخش</span>
+        </div>
+      </header>
       <div className="plan-floor-rail">
-        <div className="plan-floor-tabs">
-          <Layers size={16} aria-hidden="true" />
-          {plan.floors.map((floor) => (
-            <button
-              key={floor.id}
-              type="button"
-              className={floor.id === plan.activeFloorId ? "active" : ""}
-              onClick={() => { publishPlan({ ...plan, activeFloorId: floor.id }); setSelection(null); }}
+        <div className="plan-floor-switcher">
+          <span className="plan-floor-switcher-icon"><Layers size={16} aria-hidden="true" /></span>
+          <div>
+            <label htmlFor="plan-active-floor">طبقه فعال</label>
+            <select
+              id="plan-active-floor"
+              value={plan.activeFloorId}
+              onChange={(event) => {
+                const floorId = event.target.value;
+                publishPlan({ ...plan, activeFloorId: floorId });
+                if (viewMode === "building") setPreviewFocusFloorId(floorId);
+                setSelection(emptySelection);
+              }}
             >
-              {floor.name}
-              <small>{formatFa(floor.cameras.length)} دوربین</small>
-            </button>
-          ))}
+              {plan.floors.map((floor) => (
+                <option key={floor.id} value={floor.id}>{floor.name} · {formatFa(floor.cameras.length)} دوربین</option>
+              ))}
+            </select>
+          </div>
+          <span className="plan-floor-position">{formatFa(activeFloorIndex + 1)} از {formatFa(plan.floors.length)}</span>
+          <div className="plan-floor-stepper" aria-label="جابه‌جایی بین طبقات">
+            <button
+              type="button"
+              disabled={activeFloorIndex <= 0}
+              onClick={() => {
+                const floorId = plan.floors[activeFloorIndex - 1]?.id;
+                if (floorId) publishPlan({ ...plan, activeFloorId: floorId });
+                if (floorId && viewMode === "building") setPreviewFocusFloorId(floorId);
+                setSelection(emptySelection);
+              }}
+              aria-label="طبقه قبلی"
+              title="طبقه قبلی"
+            ><ChevronRight size={15} aria-hidden="true" /></button>
+            <button
+              type="button"
+              disabled={activeFloorIndex >= plan.floors.length - 1}
+              onClick={() => {
+                const floorId = plan.floors[activeFloorIndex + 1]?.id;
+                if (floorId) publishPlan({ ...plan, activeFloorId: floorId });
+                if (floorId && viewMode === "building") setPreviewFocusFloorId(floorId);
+                setSelection(emptySelection);
+              }}
+              aria-label="طبقه بعدی"
+              title="طبقه بعدی"
+            ><ChevronLeft size={15} aria-hidden="true" /></button>
+          </div>
         </div>
         {mode === "environment" ? (
           <div className="plan-floor-actions">
@@ -392,12 +588,29 @@ export function FloorPlanDesigner({
           <div className="plan-tool-group">
             {tools.map((item) => {
               const Icon = item.icon;
+              if (item.id === "wall") {
+                return (
+                  <WallToolMenu
+                    key={item.id}
+                    active={tool === "wall"}
+                    mode={wallDrawMode}
+                    onSelect={(nextMode) => {
+                      setWallDrawMode(nextMode);
+                      setTool("wall");
+                      setSelection(emptySelection);
+                      setHint(nextMode === "line"
+                        ? "گوشه اول و دوم را انتخاب کنید تا یک دیوار خطی رسم شود"
+                        : "گوشه اول و مقابل را انتخاب کنید تا چهار دیوار مستطیلی رسم شود");
+                    }}
+                  />
+                );
+              }
               return (
                 <button
                   key={item.id}
                   type="button"
                   className={tool === item.id ? "active" : ""}
-                  onClick={() => { setTool(item.id); setSelection(null); setHint(item.hint); }}
+                  onClick={() => { setTool(item.id); setSelection(emptySelection); setHint(item.hint); }}
                   title={item.hint}
                 >
                   <Icon size={16} aria-hidden="true" />
@@ -409,7 +622,18 @@ export function FloorPlanDesigner({
           <span className="plan-ribbon-label">ترسیم و جانمایی</span>
         </section>
 
-        <section className="plan-ribbon-section" aria-label="نمایش">
+        {mode === "environment" ? (
+          <section className="plan-ribbon-section plan-ribbon-essentials" aria-label="عناصر آماده پرکاربرد">
+            <div className="plan-tool-group">
+              <ObstacleToolMenu group="vehicle" label="خودرو" icon={CarFront} onPick={addPresetObstacle} />
+              <ObstacleToolMenu group="structure" label="سازه" icon={ChartNoAxesGantt} onPick={addPresetObstacle} />
+              <ObstacleToolMenu group="tree" label="درخت" icon={TreePine} onPick={addPresetObstacle} />
+            </div>
+            <span className="plan-ribbon-label">عناصر آماده</span>
+          </section>
+        ) : null}
+
+        <section className="plan-ribbon-section plan-ribbon-view" aria-label="نمایش">
           <div className="plan-tool-group">
           <button type="button" className={viewMode === "top" ? "active" : ""} onClick={() => setViewMode("top")}>
             <Grid3x3 size={16} aria-hidden="true" /><span>نمای نقشه</span>
@@ -422,17 +646,29 @@ export function FloorPlanDesigner({
           >
             <Move3d size={16} aria-hidden="true" /><span>نمای سه‌بعدی</span>
           </button>
-          <button type="button" className={showCoverage ? "active" : ""} onClick={() => setShowCoverage((value) => !value)}>
-            <Eye size={16} aria-hidden="true" /><span>پوشش DORI</span>
+          <button
+            type="button"
+            className={viewMode === "building" ? "active" : ""}
+            onClick={() => {
+              setViewMode("building");
+              setBuildingFloorFilter("above");
+              setPreviewFocusFloorId(null);
+              setTool("select");
+              setSelection(emptySelection);
+              setHint("پیش‌نمایش کلی ساختمان؛ یک طبقه را از پنل کناری انتخاب کنید");
+            }}
+            title="چیدمان همه طبقات روی یکدیگر"
+          >
+            <Building2 size={16} aria-hidden="true" /><span>ساختمان</span>
           </button>
           </div>
           <span className="plan-ribbon-label">نمایش</span>
         </section>
 
-        <section className="plan-ribbon-section" aria-label="تنظیم نقشه">
+        <section className="plan-ribbon-section plan-ribbon-settings" aria-label="تنظیم نقشه">
           <div className="plan-tool-group">
             <label className="plan-snap-field">
-              <span>اسنپ</span>
+              <span>مقیاس طراحی</span>
               <select value={plan.snapM} onChange={(event) => commit({ ...plan, snapM: Number(event.target.value) })}>
                 <option value={0}>آزاد</option>
                 <option value={0.1}>۱۰ سانتی‌متر</option>
@@ -462,26 +698,68 @@ export function FloorPlanDesigner({
         </section>
 
         <div className="plan-ribbon-quick plan-history-tools" dir="ltr" aria-label="دسترسی سریع">
-          <button
-            type="button"
-            disabled={historyState.past === 0}
-            onClick={undo}
-            title="واگرد (Ctrl+Z)"
-            aria-label="واگرد"
-          >
-            <Undo2 size={16} aria-hidden="true" /><span>Undo</span>
-          </button>
-          <button
-            type="button"
-            disabled={historyState.future === 0}
-            onClick={redo}
-            title="از نو (Ctrl+Y)"
-            aria-label="از نو"
-          >
-            <Redo2 size={16} aria-hidden="true" /><span>Redo</span>
-          </button>
+          <div className="plan-history-actions">
+            <button
+              type="button"
+              disabled={historyState.past === 0}
+              onClick={undo}
+              title="واگرد (Ctrl+Z)"
+              aria-label="واگرد"
+            >
+              <Undo2 size={16} aria-hidden="true" /><span>Undo</span>
+            </button>
+            <button
+              type="button"
+              disabled={historyState.future === 0}
+              onClick={redo}
+              title="از نو (Ctrl+Y)"
+              aria-label="از نو"
+            >
+              <Redo2 size={16} aria-hidden="true" /><span>Redo</span>
+            </button>
+          </div>
+          {mode === "environment" ? (
+            <button
+              type="button"
+              dir="rtl"
+              className={showAdvancedElements ? "plan-advanced-switch is-active" : "plan-advanced-switch"}
+              onClick={() => setShowAdvancedElements((value) => !value)}
+              aria-pressed={showAdvancedElements}
+              title="نمایش یا پنهان‌سازی دسته‌های تخصصی المان‌ها"
+            >
+              <span className="plan-advanced-switch-copy">
+                <Sparkles size={15} aria-hidden="true" /><span>پیشرفته</span>
+              </span>
+              <span className="plan-advanced-switch-track" aria-hidden="true"><i /></span>
+            </button>
+          ) : null}
         </div>
       </div>
+
+      {mode === "environment" && showAdvancedElements ? (
+        <section className="plan-element-strip is-advanced" aria-label="المان‌های پیشرفته">
+          <div className="plan-element-strip-label">
+            <strong>المان‌های پیشرفته</strong>
+            <small>{formatFa(obstaclePresets.filter((item) => !["vehicle", "structure", "tree"].includes(item.group)).length)} المان</small>
+          </div>
+          <div className="plan-element-strip-grid">
+            <ObstacleToolMenu group="living" label="پذیرایی" icon={Sofa} onPick={addPresetObstacle} />
+            <ObstacleToolMenu group="bedroom" label="خواب" icon={BedDouble} onPick={addPresetObstacle} />
+            <ObstacleToolMenu group="kitchen" label="آشپزخانه" icon={CookingPot} onPick={addPresetObstacle} />
+            <ObstacleToolMenu group="office" label="اداری" icon={Armchair} onPick={addPresetObstacle} />
+            <ObstacleToolMenu group="retail" label="فروشگاه" icon={ShoppingBag} onPick={addPresetObstacle} />
+            <ObstacleToolMenu group="hospitality" label="هتل" icon={Hotel} onPick={addPresetObstacle} />
+            <ObstacleToolMenu group="medical" label="درمانی" icon={Hospital} onPick={addPresetObstacle} />
+            <ObstacleToolMenu group="public-safety" label="انتظامی" icon={Shield} onPick={addPresetObstacle} />
+            <ObstacleToolMenu group="education" label="آموزشی" icon={GraduationCap} onPick={addPresetObstacle} />
+            <ObstacleToolMenu group="industrial" label="کارگاه" icon={Factory} onPick={addPresetObstacle} />
+            <ObstacleToolMenu group="warehouse" label="انبار" icon={Warehouse} onPick={addPresetObstacle} />
+            <ObstacleToolMenu group="parking" label="پارکینگ" icon={CircleParking} onPick={addPresetObstacle} />
+            <ObstacleToolMenu group="landscape" label="محوطه" icon={Sprout} onPick={addPresetObstacle} />
+            <ObstacleToolMenu group="site" label="تجهیزات" icon={Fence} onPick={addPresetObstacle} />
+          </div>
+        </section>
+      ) : null}
 
       <div className="plan-defaults-section">
         <button
@@ -551,7 +829,7 @@ export function FloorPlanDesigner({
                 type="button"
                 className="smart-placement-action"
                 onClick={runSmartPlacement}
-                disabled={isOptimisingPlacement || cameraDefinitions.length === 0}
+                disabled={isOptimisingPlacement || remainingDefinitions.length === 0}
               >
                 <Sparkles className={isOptimisingPlacement ? "is-spinning" : undefined} size={16} aria-hidden="true" />
                 {isOptimisingPlacement ? "در حال تحلیل عمیق نقشه..." : "تحلیل و ساخت چیدمان پیشنهادی"}
@@ -578,25 +856,29 @@ export function FloorPlanDesigner({
                 </div>
               ) : null}
             </section>
-            <CameraInventory
-              definitions={cameraDefinitions}
-              placedIds={placedDefinitionIds}
-            />
+            <CameraPalette templates={cameraTemplates} placedByTemplate={placedByTemplate} />
           </div>
         ) : null}
         <PlanCanvas
+          key={viewMode === "building" ? "building-preview" : activeFloor.id}
           floor={activeFloor}
           tool={tool}
+          wallDrawMode={wallDrawMode}
           viewMode={viewMode}
           selection={selection}
           snapM={plan.snapM}
           defaults={designDefaults}
+          readOnly={viewMode === "building"}
+          buildingFloors={viewMode === "building" ? buildingPreviewFloors : undefined}
+          focusedFloorId={viewMode === "building" ? previewFocusFloorId : null}
+          referenceFloor={viewMode !== "building" && mode === "environment" ? referenceFloor : null}
           pendingBackdrop={pendingBackdrop}
           showCoverage={showCoverage}
           onSelect={setSelection}
           onFloorChange={updateFloor}
           onHint={setHint}
-          onDropCamera={mode === "cameras" ? placeDefinedCamera : undefined}
+          onDropCamera={mode === "cameras" ? placeTemplateCamera : undefined}
+          onDropPreset={mode === "environment" ? dropPresetObstacle : undefined}
           onPlaceBackdrop={placePendingBackdrop}
           onCancelBackdropPlacement={() => {
             setPendingBackdrop(null);
@@ -604,7 +886,28 @@ export function FloorPlanDesigner({
           }}
         />
         <div className="plan-workspace-sidebar">
-          {backdropControls ? (
+          {viewMode === "building" ? (
+            <BuildingPreviewPanel
+              floors={buildingPreviewFloors}
+              floorFilter={buildingFloorFilter}
+              focusedFloorId={previewFocusFloorId}
+              onFilterChange={(filter) => {
+                setBuildingFloorFilter(filter);
+                setPreviewFocusFloorId(null);
+              }}
+              onFocus={(floorId) => {
+                setPreviewFocusFloorId(floorId);
+                if (floorId) publishPlan({ ...plan, activeFloorId: floorId });
+              }}
+            />
+          ) : null}
+          {viewMode !== "building" && referenceFloor ? (
+            <div className="plan-floor-reference-note">
+              <Layers size={16} aria-hidden="true" />
+              <div><strong>محدوده طبقه زیرین</strong><span>خط قرمز، مرز «{referenceFloor.name}» است؛ بهتر است دیوارهای این طبقه داخل آن بمانند.</span></div>
+            </div>
+          ) : null}
+          {viewMode !== "building" && backdropControls ? (
             <BackdropControls
               backdrop={backdropControls}
               isPlacing={Boolean(pendingBackdrop)}
@@ -622,15 +925,16 @@ export function FloorPlanDesigner({
               }}
             />
           ) : null}
-          <PlanInspector
+          {viewMode !== "building" ? <PlanInspector
             floor={activeFloor}
             selection={selection}
             activeTool={tool}
+            wallDrawMode={wallDrawMode}
             defaults={designDefaults}
             onDefaultsChange={(patch) => commit({ ...plan, defaults: { ...designDefaults, ...patch } })}
             onFloorChange={updateFloor}
             onSelect={setSelection}
-          />
+          /> : null}
         </div>
       </div>
 
@@ -646,10 +950,22 @@ export function FloorPlanDesigner({
 
       <div className="plan-statusbar">
         <span className="plan-hint">{hint ?? activeTool?.hint}</span>
+        {mode === "cameras" ? (
+          <button
+            type="button"
+            className={showCoverage ? "plan-coverage-toggle active" : "plan-coverage-toggle"}
+            onClick={() => setShowCoverage((value) => !value)}
+            aria-pressed={showCoverage}
+          >
+            <span className="plan-toggle-track" aria-hidden="true"><i /></span>
+            <Eye size={14} aria-hidden="true" />
+            پوشش DORI
+          </button>
+        ) : null}
         <div className="plan-metrics">
           <span className="plan-grid-readout" title="خطوط پررنگ شبکه هر ۵ متر تکرار می‌شوند">
             <Grid3x3 size={13} aria-hidden="true" />
-            شبکه {formatFa(plan.gridSizeM)} متر · اسنپ {plan.snapM > 0 ? `${formatFa(plan.snapM)} متر` : "آزاد"}
+            شبکه {formatFa(plan.gridSizeM)} متر · مقیاس طراحی {plan.snapM > 0 ? `${formatFa(plan.snapM)} متر` : "آزاد"}
           </span>
           <span>
             <strong>{hasClosedPerimeter ? formatFa(areaM2, 1) : "—"}</strong>
@@ -667,85 +983,251 @@ export function FloorPlanDesigner({
   );
 }
 
-function CameraInventory({
-  definitions,
-  placedIds
+function WallToolMenu({
+  active,
+  mode,
+  onSelect
 }: {
-  definitions: PlanCameraDefinition[];
-  placedIds: Set<string>;
+  active: boolean;
+  mode: WallDrawMode;
+  onSelect: (mode: WallDrawMode) => void;
 }) {
-  const groups = definitions.reduce<Array<{ id: string; name: string; cameras: PlanCameraDefinition[] }>>((result, camera) => {
-    const group = result.find((item) => item.id === camera.zoneId);
-    if (group) group.cameras.push(camera);
-    else result.push({ id: camera.zoneId, name: camera.groupName, cameras: [camera] });
-    return result;
-  }, []);
+  return (
+    <div className="plan-object-tool-menu plan-wall-tool-menu">
+      <button
+        type="button"
+        className={active ? "plan-object-tool-trigger active" : "plan-object-tool-trigger"}
+        onClick={() => onSelect(mode)}
+        aria-haspopup="menu"
+        title="انتخاب روش رسم دیوار"
+      >
+        <BrickWall className="plan-object-tool-main-icon" size={16} aria-hidden="true" />
+        <span>دیوار</span>
+        <ChevronDown className="plan-object-tool-chevron" size={11} aria-hidden="true" />
+      </button>
+      <div className="plan-object-tool-popover plan-wall-mode-popover" role="menu" aria-label="روش رسم دیوار">
+        <div className="plan-object-tool-popover-title">
+          <BrickWall size={17} aria-hidden="true" />
+          <div><strong>روش رسم دیوار</strong><small>حالت موردنظر را انتخاب کنید</small></div>
+        </div>
+        <button type="button" className={mode === "line" ? "active" : ""} role="menuitem" onClick={() => onSelect("line")}>
+          <span><strong>دیوار خطی</strong><small>رسم یک دیوار بین دو نقطه</small></span>
+          <Minus size={18} aria-hidden="true" />
+        </button>
+        <button type="button" className={mode === "rectangle" ? "active" : ""} role="menuitem" onClick={() => onSelect("rectangle")}>
+          <span><strong>فضای مستطیلی</strong><small>ساخت چهار دیوار بسته با دو کلیک</small></span>
+          <Square size={17} aria-hidden="true" />
+        </button>
+        <button type="button" className={mode === "glass" ? "active" : ""} role="menuitem" onClick={() => onSelect("glass")}>
+          <span><strong>جدار شیشه‌ای</strong><small>مرز شفاف؛ دید دوربین از آن عبور می‌کند</small></span>
+          <Blinds size={17} aria-hidden="true" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Preset picker for one category.
+ *
+ * Each category gets its own trigger so a room's contents are one click away rather than
+ * buried in a section of a combined list. Rows are direct children of the popover, which
+ * is what the row grid styling targets.
+ */
+function ObstacleToolMenu({
+  group,
+  label,
+  icon: Icon,
+  onPick
+}: {
+  group: ObstacleGroup;
+  label: string;
+  icon: typeof CarFront;
+  onPick: (preset: ObstaclePreset) => void;
+}) {
+  const presets = obstaclePresets.filter((preset) => preset.group === group);
+  if (!presets.length) return null;
 
   return (
-    <aside className="camera-inventory" aria-label="دوربین‌های تعریف‌شده">
+    <div className={`plan-object-tool-menu is-${group}`}>
+      <button type="button" className="plan-object-tool-trigger" aria-haspopup="menu" title={`افزودن ${label}`}>
+        <Icon className="plan-object-tool-main-icon" size={16} aria-hidden="true" />
+        <span>{label}</span>
+        <ChevronDown className="plan-object-tool-chevron" size={11} aria-hidden="true" />
+      </button>
+      <div className="plan-object-tool-popover" role="menu" aria-label={`عناصر ${label}`}>
+        <div className="plan-object-tool-popover-title">
+          <Icon size={17} aria-hidden="true" />
+          <div><strong>افزودن {label}</strong><small>کلیک کنید یا روی نقشه بکشید</small></div>
+        </div>
+        {presets.map((preset) => (
+          <button
+            key={preset.id}
+            type="button"
+            role="menuitem"
+            draggable
+            onDragStart={(event) => startPresetDrag(event, preset)}
+            onDragEnd={() => document.querySelector(".preset-drag-ghost")?.remove()}
+            onClick={() => onPick(preset)}
+          >
+            <span><strong>{preset.label}</strong><small>{preset.description}</small></span>
+            <em>{preset.widthM} × {preset.depthM} × {preset.heightM} m</em>
+            <Plus size={14} aria-hidden="true" />
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Drag payload for dropping a preset straight onto the plan. */
+function startPresetDrag(event: React.DragEvent, preset: ObstaclePreset) {
+  event.dataTransfer.effectAllowed = "copy";
+  event.dataTransfer.setData("application/x-hamyar-preset", preset.id);
+  event.dataTransfer.setData("text/plain", preset.label);
+  document.querySelector(".preset-drag-ghost")?.remove();
+  const ghost = document.createElement("div");
+  ghost.className = "preset-drag-ghost";
+  ghost.textContent = preset.label;
+  ghost.setAttribute("aria-hidden", "true");
+  document.body.append(ghost);
+  event.dataTransfer.setDragImage(ghost, 12, 12);
+}
+
+function BuildingPreviewPanel({
+  floors,
+  floorFilter,
+  focusedFloorId,
+  onFilterChange,
+  onFocus
+}: {
+  floors: FloorPlan[];
+  floorFilter: BuildingFloorFilter;
+  focusedFloorId: string | null;
+  onFilterChange: (filter: BuildingFloorFilter) => void;
+  onFocus: (floorId: string | null) => void;
+}) {
+  return (
+    <aside className="building-preview-panel">
+      <header>
+        <span><Building2 size={19} aria-hidden="true" /></span>
+        <div><strong>طبقات ساختمان</strong><small>طبقه انتخابی واضح و سایر طبقات شفاف نمایش داده می‌شوند.</small></div>
+      </header>
+      <div className="building-preview-filters" role="group" aria-label="محدوده نمایش طبقات">
+        <button type="button" className={floorFilter === "above" ? "active" : ""} onClick={() => onFilterChange("above")}>روی زمین</button>
+        <button type="button" className={floorFilter === "below" ? "active" : ""} onClick={() => onFilterChange("below")}>زیرزمین</button>
+        <button type="button" className={floorFilter === "all" ? "active" : ""} onClick={() => onFilterChange("all")}>همه</button>
+      </div>
+      <button
+        type="button"
+        className={focusedFloorId === null ? "building-preview-all active" : "building-preview-all"}
+        onClick={() => onFocus(null)}
+      >
+        <Layers size={15} aria-hidden="true" />نمایش هم‌زمان طبقات این گروه
+      </button>
+      <div className="building-preview-floor-list">
+        {[...floors].reverse().map((floor, reverseIndex) => {
+          const floorNumber = floors.length - reverseIndex;
+          const focused = floor.id === focusedFloorId;
+          return (
+            <button key={floor.id} type="button" className={focused ? "active" : ""} onClick={() => onFocus(floor.id)}>
+              <span className="building-floor-index">{formatFa(floorNumber)}</span>
+              <span><strong>{floor.name}</strong><small>تراز {formatFa(floor.elevationM, 1)} متر · ارتفاع {formatFa(floor.heightM, 1)} متر</small></span>
+              <Eye size={15} aria-hidden="true" />
+            </button>
+          );
+        })}
+        {floors.length === 0 ? <div className="building-preview-empty">طبقه‌ای در این گروه وجود ندارد.</div> : null}
+      </div>
+      <p>انتخاب طبقه، مختصات افقی آن را تغییر نمی‌دهد؛ بنابراین هنگام بازگشت به نمای نقشه دقیقاً در محل قبلی باقی می‌ماند.</p>
+    </aside>
+  );
+}
+
+function startCameraDrag(event: React.DragEvent, payloadId: string, housing: string) {
+  event.dataTransfer.effectAllowed = "copy";
+  event.dataTransfer.setData("application/x-hamyar-camera", payloadId);
+  event.dataTransfer.setData("text/plain", payloadId);
+  document.querySelector(".camera-drag-ghost")?.remove();
+  const ghost = document.createElement("div");
+  ghost.className = `camera-drag-ghost is-${housing}`;
+  ghost.setAttribute("aria-hidden", "true");
+  const coverage = document.createElement("span");
+  coverage.className = "camera-drag-ghost-coverage";
+  const body = document.createElement("span");
+  body.className = "camera-drag-ghost-body";
+  const lens = document.createElement("span");
+  lens.className = "camera-drag-ghost-lens";
+  const bracket = document.createElement("span");
+  bracket.className = "camera-drag-ghost-bracket";
+  body.append(lens);
+  ghost.append(coverage, bracket, body);
+  document.body.append(ghost);
+  event.dataTransfer.setDragImage(ghost, 24, 32);
+}
+
+/**
+ * Palette of device types.
+ *
+ * Each entry is a reusable type rather than a single reserved camera, so the counter
+ * shows progress against the planned quantity instead of locking after one use.
+ */
+function CameraPalette({
+  templates,
+  placedByTemplate
+}: {
+  templates: ProjectCameraTemplate[];
+  placedByTemplate: Map<string, number>;
+}) {
+  return (
+    <aside className="camera-inventory" aria-label="دستگاه‌های تعریف‌شده">
       <header>
         <CameraIcon size={18} aria-hidden="true" />
-        <div><strong>دوربین‌های تعریف‌شده</strong><small>دوربین را بکشید و روی نقشه رها کنید</small></div>
+        <div><strong>دستگاه‌های تعریف‌شده</strong><small>نوع دستگاه را بکشید و روی نقشه رها کنید</small></div>
       </header>
-      {groups.length > 0 ? (
-        <div className="camera-inventory-groups">
-          {groups.map((group) => {
-            const placedCount = group.cameras.filter((camera) => placedIds.has(camera.id)).length;
+
+      {templates.length > 0 ? (
+        <div className="camera-inventory-list">
+          {templates.map((template) => {
+            const placed = placedByTemplate.get(template.id) ?? 0;
+            const complete = placed >= template.quantity;
             return (
-              <section key={group.id} className="camera-inventory-group">
-                <div className="camera-inventory-group-head">
-                  <strong>{group.name}</strong>
-                  <span>{formatFa(placedCount)} / {formatFa(group.cameras.length)}</span>
-                </div>
-                <div className="camera-inventory-list">
-                  {group.cameras.map((camera) => {
-                    const placed = placedIds.has(camera.id);
-                    return (
-                      <button
-                        key={camera.id}
-                        type="button"
-                        className={placed ? "camera-inventory-card is-placed" : "camera-inventory-card"}
-                        draggable={!placed}
-                        disabled={placed}
-                        onDragStart={(event) => {
-                          event.dataTransfer.effectAllowed = "copy";
-                          event.dataTransfer.setData("application/x-hamyar-camera", camera.id);
-                          event.dataTransfer.setData("text/plain", camera.id);
-                          const previousGhost = document.querySelector(".camera-drag-ghost");
-                          previousGhost?.remove();
-                          const ghost = document.createElement("div");
-                          ghost.className = `camera-drag-ghost is-${camera.housing}`;
-                          ghost.setAttribute("aria-hidden", "true");
-                          const coverage = document.createElement("span");
-                          coverage.className = "camera-drag-ghost-coverage";
-                          const cameraBody = document.createElement("span");
-                          cameraBody.className = "camera-drag-ghost-body";
-                          const cameraLens = document.createElement("span");
-                          cameraLens.className = "camera-drag-ghost-lens";
-                          const cameraBracket = document.createElement("span");
-                          cameraBracket.className = "camera-drag-ghost-bracket";
-                          cameraBody.append(cameraLens);
-                          ghost.append(coverage, cameraBracket, cameraBody);
-                          document.body.append(ghost);
-                          event.dataTransfer.setDragImage(ghost, 24, 32);
-                        }}
-                        onDragEnd={() => document.querySelector(".camera-drag-ghost")?.remove()}
-                        title={placed ? "این دوربین جانمایی شده است؛ برای استفاده دوباره ابتدا آن را از نقشه حذف کنید" : "برای جانمایی روی نقشه بکشید"}
-                      >
-                        <CameraIcon size={17} aria-hidden="true" />
-                        <span><strong>{camera.name}</strong><small>{camera.optics.megapixel}MP · {camera.optics.focalMm}mm · {cameraHousingLabel[camera.housing]}</small></span>
-                        {placed ? <Check size={15} aria-hidden="true" /> : <span className="camera-drag-grip" aria-hidden="true">⠿</span>}
-                      </button>
-                    );
-                  })}
-                </div>
-              </section>
+              <button
+                key={template.id}
+                type="button"
+                className={complete ? "camera-inventory-card is-complete" : "camera-inventory-card"}
+                draggable
+                onDragStart={(event) => startCameraDrag(event, template.id, template.housing)}
+                onDragEnd={() => document.querySelector(".camera-drag-ghost")?.remove()}
+                title="برای جانمایی روی نقشه بکشید — این نوع دستگاه محدودیت تعداد ندارد"
+              >
+                <CameraIcon size={17} aria-hidden="true" />
+                <span>
+                  <strong>{template.label}</strong>
+                  <small>{template.megapixel}MP · {template.focalMm}mm · {housingLabels[template.housing]}</small>
+                </span>
+                <em className={complete ? "camera-inventory-count is-complete" : "camera-inventory-count"}>
+                  {formatFa(placed)} / {formatFa(template.quantity)}
+                </em>
+              </button>
             );
           })}
         </div>
       ) : (
-        <p className="camera-inventory-empty">ابتدا در بالای همین مرحله یک گروه و حداقل یک دوربین تعریف کنید.</p>
+        <p className="camera-inventory-empty">در مرحله «دستگاه‌های پیش‌فرض» حداقل یک نوع دستگاه تعریف کنید.</p>
       )}
+
+      <button
+        type="button"
+        className="camera-inventory-card is-blank"
+        draggable
+        onDragStart={(event) => startCameraDrag(event, BLANK_CAMERA_ID, "turret")}
+        onDragEnd={() => document.querySelector(".camera-drag-ghost")?.remove()}
+        title="دوربینی خارج از انواع تعریف‌شده اضافه کنید"
+      >
+        <Plus size={17} aria-hidden="true" />
+        <span><strong>دوربین سفارشی</strong><small>بدون نوع از پیش تعریف‌شده</small></span>
+      </button>
     </aside>
   );
 }
@@ -812,6 +1294,9 @@ function BackdropControls({
           <strong>{isPlacing ? "جای‌گذاری تصویر" : "تصویر زمینه نقشه"}</strong>
           <small>{isPlacing ? "تصویر را با ماوس حرکت دهید و روی محل دلخواه کلیک کنید" : "اندازه و شفافیت تصویر را تنظیم کنید"}</small>
         </div>
+        <button type="button" className="plan-remove-backdrop" onClick={onRemove} title="حذف تصویر" aria-label="حذف تصویر">
+          <Trash2 size={15} aria-hidden="true" />
+        </button>
       </header>
       <label>
         <span><b>عرض تصویر</b><output>{formatFa(widthM, 1)} متر</output></span>
@@ -827,9 +1312,6 @@ function BackdropControls({
         ) : (
           <button type="button" onClick={onReposition}><Move3d size={14} aria-hidden="true" />جابه‌جایی تصویر</button>
         )}
-        <button type="button" className="plan-remove-backdrop" onClick={onRemove}>
-          <Minus size={14} aria-hidden="true" />حذف تصویر
-        </button>
       </div>
     </aside>
   );

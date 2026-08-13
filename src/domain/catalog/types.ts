@@ -140,6 +140,30 @@ export type SurveillanceTask = "monitor" | "face-capture" | "face-identify" | "p
 
 export type CameraHousing = "dome" | "turret" | "bullet" | "ptz";
 
+export type VideoCodec = "H.264" | "H.265" | "H.265+";
+
+export type StreamQuality = "standard" | "high" | "highest";
+
+/**
+ * Per-camera encoder settings.
+ *
+ * Held on the camera rather than the project because a plate reader at 50 fps CBR and a
+ * corridor turret at 12 fps H.265+ belong to the same site but produce wildly different
+ * archive load. `bitrateKbps` is what the capacity engine consumes; the rest describes
+ * how that number was arrived at so it stays auditable.
+ */
+export type CameraStreamConfig = {
+  codec: VideoCodec;
+  fps: number;
+  bitrateMode: "VBR" | "CBR";
+  bitrateKbps: number;
+  quality: StreamQuality;
+  audioEnabled: boolean;
+  recordingMode: "continuous" | "motion";
+  /** Share of the day the scene is actually active; ignored for continuous recording. */
+  motionActivityPercent: number;
+};
+
 export type ProjectCameraConfig = {
   /** User-facing identity shared by the cameras in this group. */
   label: string;
@@ -152,6 +176,34 @@ export type ProjectCameraConfig = {
   microphone: boolean;
   colorNightVision: boolean;
   weatherproof: boolean;
+  stream?: CameraStreamConfig;
+};
+
+/**
+ * A device type defined once and reused wherever it is needed.
+ *
+ * Replaces the old per-zone camera tables: the user describes a handful of devices and
+ * roughly how many of each, then places them on the plan. `quantity` is only a planning
+ * estimate — once cameras are on a map, the map is what counts.
+ */
+export type ProjectCameraTemplate = {
+  id: string;
+  label: string;
+  housing: CameraHousing;
+  goal: SurveillanceTask;
+  outdoor: boolean;
+  quantity: number;
+  megapixel: number;
+  sensorWidthMm: number;
+  focalMm: number;
+  irRangeM: number;
+  maxRangeM: number;
+  mountingHeightM: number;
+  cameraTiltDeg: number;
+  microphone: boolean;
+  colorNightVision: boolean;
+  weatherproof: boolean;
+  stream: CameraStreamConfig;
 };
 
 export type ProjectCameraUnit = ProjectCameraConfig & {
@@ -262,6 +314,8 @@ export type ProjectBrief = {
   filesystemOverheadPercent: number;
   vbrSafetyMarginPercent: number;
   reservePercent: number;
+  /** Device types defined once and reused; the planning source for camera selection. */
+  cameraTemplates?: ProjectCameraTemplate[];
   zones?: ProjectZone[];
 };
 
