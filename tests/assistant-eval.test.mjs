@@ -324,6 +324,12 @@ describe("local LLM response policy", () => {
     assert.equal(shouldUseLocalLlm(reply("knowledge", "info_codec"), "فرق H.264 و H.265 چیست؟", 1, "high"), true);
   });
 
+  test("sends site installation and complete-system requests through grounded reasoning", () => {
+    assert.equal(shouldUseLocalLlm(reply("knowledge", "info_install"), "دوربین را در پارکینگ چطور نصب کنم؟", 1, "medium"), true);
+    assert.equal(shouldUseLocalLlm(reply("knowledge", "recommend_system"), "برای انبار چه سیستمی طراحی کنم؟", 1, "medium"), true);
+    assert.equal(shouldUseLocalLlm(reply("knowledge", "info_install"), "اصول نصب چیست؟", 1, "low"), false);
+  });
+
   test("uses conversation history for short contextual follow-ups without opening first-turn off-topic questions", () => {
     const fallback = reply("system", "fallback", "این موضوع خارج از تخصص من است");
     assert.equal(shouldUseLocalLlm(fallback, "برای حالت قبلی چی؟", 4, "medium"), true);

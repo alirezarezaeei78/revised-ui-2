@@ -1,0 +1,27 @@
+{
+  "allowedDomains": [
+    "manufacturer.example"
+  ],
+  "documents": [
+    {
+      "kind": "datasheet",
+      "brand": "Manufacturer",
+      "partNumber": "EXACT-PART-NUMBER",
+      "sourceUrl": "https://manufacturer.example/datasheets/EXACT-PART-NUMBER.pdf",
+      "sourceTitle": "Official EXACT-PART-NUMBER datasheet",
+      "language": "en",
+      "facts": {
+        "resolutionMp": 4,
+        "lens": "2.8 mm",
+        "poe": true,
+        "ipRating": "IP67"
+      }
+    },
+    {
+      "kind": "installation",
+      "sourceUrl": "https://manufacturer.example/support/installation-guide",
+      "sourceTitle": "Official installation guide",
+      "language": "en"
+    }
+  ]
+}

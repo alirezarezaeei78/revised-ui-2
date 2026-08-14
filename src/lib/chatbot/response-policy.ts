@@ -4,6 +4,7 @@ import type { ChatReply } from "@/src/lib/chatbot/engine";
 const memoryCommandPattern = /(یادت باشه|یادت باشد|به خاطر بسپار|به یاد بسپار|اسم من|نام من|حافظه.*(?:پاک|نشان)|چه چیزی از من یادت|چی از من یادت|همه چیز را فراموش)/i;
 const contextualPattern = /^(?:و|پس|حالا|خب)?\s*(?:برای|اگر|یعنی|پس|اون|آن|این|همین|قبلی|بیشتر|ادامه|چطورش|چگونه‌اش|در موردش|باهاش|بدونش|چی|چه‌طور)/i;
 const synthesisPattern = /(طراح|معماری|سناریو|راهبرد|استراتژی|توپولوژی|مرحله\s*به\s*مرحله|قدم\s*به\s*قدم|عیب\s*یابی|رفع\s*مشکل|مشکل|قطع\s*(?:و|‌و)?\s*وصل|هک|نفوذ|حادثه|ریسک|علت|چرا|چطور|چگونه|امن\s*(?:کن|سازی)|vlan|فایروال|firewall|acl|trunk|access)/i;
+const installationPattern = /(نصب|جانمایی|کابل\s*کشی|پروژه|چه سیستمی|کجا\s*(?:بزن|نصب)|فروشگاه|مغازه|خانه|آپارتمان|انبار|سوله|کارخانه|پارکینگ|پلاک|بیمارستان|مدرسه|بانک|محوطه|آسانسور)/i;
 
 /**
  * Exact catalog, calculation and simple knowledge answers should not be rewritten by
@@ -27,7 +28,9 @@ export function shouldUseLocalLlm(
   if (reply.answer.source === "knowledge") {
     if (mode === "low") return false;
     if (mode === "high") return true;
-    return synthesisPattern.test(normalize(message)) || message.length > 220;
+    return reply.intent === "recommend_system" || reply.intent === "info_install"
+      || synthesisPattern.test(normalize(message)) || installationPattern.test(normalize(message))
+      || message.length > 220;
   }
 
   return true;
