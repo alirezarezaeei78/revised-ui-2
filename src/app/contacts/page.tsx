@@ -1,4 +1,3 @@
-import Link from "next/link";
 import { Mail, MapPin, Phone } from "lucide-react";
 import Image from "next/image";
 

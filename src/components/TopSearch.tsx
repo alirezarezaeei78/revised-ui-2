@@ -15,7 +15,6 @@ export function TopSearch({ lockedToolSlugs = [] }: { lockedToolSlugs?: string[]
 function TopSearchInner({ lockedToolSlugs }: { lockedToolSlugs: string[] }) {
   const [query, setQuery] = useState("");
   const [focused, setFocused] = useState(false);
-  const [isHydrated, setIsHydrated] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const canSearch = normalizeText(query).length >= minimumSearchLength;
@@ -76,7 +75,6 @@ function TopSearchInner({ lockedToolSlugs }: { lockedToolSlugs: string[] }) {
         reactPanel.style.display = "";
       }
     }
-    setIsHydrated(true);
   }, []);
 
   function submitSearch(event: FormEvent<HTMLFormElement>) {
@@ -107,7 +105,6 @@ function TopSearchInner({ lockedToolSlugs }: { lockedToolSlugs: string[] }) {
       <div
         className="top-search-panel"
         hidden={!open}
-        style={isHydrated ? {} : undefined}
       >
         {canSearch ? (
           results.length > 0 ? (

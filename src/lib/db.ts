@@ -14,6 +14,6 @@ if (process.env.NODE_ENV !== "production") {
   globalForDb.pool = pool;
 }
 
-export async function query(text: string, params?: any[]) {
+export async function query(text: string, params?: unknown[]) {
   return pool.query(text, params);
 }

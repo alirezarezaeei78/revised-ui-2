@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { AdminPanel } from "@/src/components/AdminPanel";
+import type { AdminUser } from "@/src/components/AdminPanel";
 import { ensureAuthSchema, getDefaultTrialDays, getSmsConfig } from "@/src/lib/authStore";
 import { getCurrentSession } from "@/src/lib/session";
 import { query } from "@/src/lib/db";
@@ -15,7 +16,7 @@ export default async function AdminPage() {
     redirect("/");
   }
 
-  let initialUsers: any[] = [];
+  let initialUsers: AdminUser[] = [];
   let totalUsers = 0;
   let totalPages = 1;
   let defaultTrialDays = 7;

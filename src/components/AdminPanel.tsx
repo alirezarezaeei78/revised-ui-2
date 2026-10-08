@@ -6,7 +6,7 @@ import type { UserPlan, UserRole } from "@/src/lib/authStore";
 import { getSubscriptionAccess } from "@/src/lib/subscription";
 import { RequiredNumberInput } from "@/src/components/calculators/CalculatorUi";
 
-type AdminUser = {
+export type AdminUser = {
   id: string;
   username: string;
   role: UserRole;

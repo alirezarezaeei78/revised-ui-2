@@ -46,7 +46,7 @@ async function main() {
     if (run.logs && run.logs.length > seenLogCount) {
       console.log("New Logs:");
       const newLogs = run.logs.slice(seenLogCount);
-      newLogs.forEach((l: any) => {
+      newLogs.forEach((l: { level: string; message: string }) => {
         console.log(`  [${l.level}] ${l.message}`);
       });
       seenLogCount = run.logs.length;

@@ -5,6 +5,11 @@ const eslintConfig = [
   ...nextVitals,
   ...nextTypescript,
   {
+    files: ["scripts/*.js"],
+    // These standalone Node scripts use CommonJS intentionally.
+    rules: { "@typescript-eslint/no-require-imports": "off" }
+  },
+  {
     ignores: [".next/**", "node_modules/**", "out/**"]
   }
 ];

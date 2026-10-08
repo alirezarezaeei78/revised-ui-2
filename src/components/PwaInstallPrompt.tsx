@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { Download, Share2, X } from "lucide-react";
 import Image from "next/image";
 
@@ -14,9 +14,33 @@ function isStandalone() {
     || (window.navigator as Navigator & { standalone?: boolean }).standalone === true;
 }
 
+function wasDismissed() {
+  try { return sessionStorage.getItem("pwa-install-dismissed") === "1"; }
+  catch { return false; }
+}
+
+function iosHelpSnapshot() {
+  if (isStandalone() || wasDismissed()) return false;
+  return /iphone|ipad|ipod/i.test(navigator.userAgent)
+    || (/Macintosh/i.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+}
+
+function subscribeDisplayMode(onChange: () => void) {
+  const media = window.matchMedia("(display-mode: standalone)");
+  media.addEventListener("change", onChange);
+  window.addEventListener("storage", onChange);
+  return () => {
+    media.removeEventListener("change", onChange);
+    window.removeEventListener("storage", onChange);
+  };
+}
+
+const serverSnapshot = () => false;
+
 export function PwaInstallPrompt() {
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
-  const [showIosHelp, setShowIosHelp] = useState(false);
+  const showIosHelp = useSyncExternalStore(subscribeDisplayMode, iosHelpSnapshot, serverSnapshot);
+  const [installed, setInstalled] = useState(false);
   const [dismissed, setDismissed] = useState(false);
 
   useEffect(() => {
@@ -24,11 +48,7 @@ export function PwaInstallPrompt() {
       navigator.serviceWorker.register("/sw.js").catch(() => undefined);
     }
 
-    if (isStandalone() || sessionStorage.getItem("pwa-install-dismissed") === "1") return;
-
-    const ios = /iphone|ipad|ipod/i.test(navigator.userAgent)
-      || (/Macintosh/i.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
-    if (ios) setShowIosHelp(true);
+    if (isStandalone() || wasDismissed()) return;
 
     const handleInstallPrompt = (event: Event) => {
       event.preventDefault();
@@ -37,7 +57,7 @@ export function PwaInstallPrompt() {
 
     const handleInstalled = () => {
       setInstallPrompt(null);
-      setShowIosHelp(false);
+      setInstalled(true);
     };
 
     window.addEventListener("beforeinstallprompt", handleInstallPrompt);
@@ -49,7 +69,7 @@ export function PwaInstallPrompt() {
   }, []);
 
   function dismiss() {
-    sessionStorage.setItem("pwa-install-dismissed", "1");
+    try { sessionStorage.setItem("pwa-install-dismissed", "1"); } catch { /* Storage may be disabled. */ }
     setDismissed(true);
   }
 
@@ -60,7 +80,7 @@ export function PwaInstallPrompt() {
     if (choice.outcome === "accepted") setInstallPrompt(null);
   }
 
-  if (dismissed || (!installPrompt && !showIosHelp)) return null;
+  if (dismissed || installed || (!installPrompt && !showIosHelp)) return null;
 
   return (
     <aside className="pwa-install-prompt" role="status" aria-label="نصب همیار دوربین">

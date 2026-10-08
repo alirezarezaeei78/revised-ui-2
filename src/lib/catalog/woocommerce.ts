@@ -2,6 +2,7 @@ import type { CameraSpecs, CatalogProduct, ProductCategory, RecorderSpecs, Stora
 import { pool } from "@/src/lib/db";
 import type { PoolClient } from "pg";
 import { startCatalogImageWorker } from "@/src/lib/catalog/image-cache";
+import { recorderSpecValues } from "@/src/lib/catalog/recorder-spec-values";
 
 type WooProduct = {
   id: number; name: string; sku: string; price: string; regular_price: string;
@@ -65,7 +66,7 @@ function cameraSpecs(text: string, warnings: string[]): CameraSpecs {
   const maxPowerW = numberFrom(text, /(\d+(?:[.,]\d+)?)\s*w(?:att)?/i, 10, "توان دوربین تخمینی است.", warnings);
   
   const hasIpRating = /ip6[5-9]/i.test(text);
-  const ipRating = hasIpRating ? text.match(/ip6[5-9]/i)?.[0].toUpperCase()! : "IP66";
+  const ipRating = hasIpRating ? (text.match(/ip6[5-9]/i)?.[0].toUpperCase() ?? "IP66") : "IP66";
   if (!hasIpRating) {
     warnings.push("درجه حفاظت بدنه (IP66) تخمینی است.");
   }
@@ -232,7 +233,7 @@ async function batchInsert<T>(
   table: string,
   columns: string[],
   records: T[],
-  toValues: (record: T, index: number) => any[],
+  toValues: (record: T, index: number) => unknown[],
   onConflictSql?: string
 ) {
   if (records.length === 0) return;
@@ -244,7 +245,7 @@ async function batchInsert<T>(
   for (let i = 0; i < records.length; i += chunkSize) {
     const chunk = records.slice(i, i + chunkSize);
     const valuePlaceholders: string[] = [];
-    const params: any[] = [];
+    const params: unknown[] = [];
     
     chunk.forEach((record, recordIdx) => {
       const placeholders = [];
@@ -444,12 +445,12 @@ async function executeWooCatalogSync(runId: number, dryRun: boolean) {
       for (let i = 0; i < sourceProducts.length; i += batchSize) {
         const chunk = sourceProducts.slice(i, i + batchSize);
         
-        const snapshotsData: any[] = [];
-        const attributesData: any[] = [];
-        const imagesData: any[] = [];
-        const imageJobsData: any[] = [];
-        const categoriesData: any[] = [];
-        const tagsData: any[] = [];
+        const snapshotsData = [];
+        const attributesData = [];
+        const imagesData = [];
+        const imageJobsData = [];
+        const categoriesData = [];
+        const tagsData = [];
         
         for (const product of chunk) {
           snapshotsData.push({
@@ -608,12 +609,12 @@ async function executeWooCatalogSync(runId: number, dryRun: boolean) {
       for (let i = 0; i < products.length; i += batchSize) {
         const chunk = products.slice(i, i + batchSize);
         
-        const catalogProductsData: any[] = [];
-        const cameraSpecsData: any[] = [];
-        const recorderSpecsData: any[] = [];
-        const switchSpecsData: any[] = [];
-        const storageSpecsData: any[] = [];
-        const upsSpecsData: any[] = [];
+        const catalogProductsData = [];
+        const cameraSpecsData = [];
+        const recorderSpecsData = [];
+        const switchSpecsData = [];
+        const storageSpecsData = [];
+        const upsSpecsData = [];
         
         for (const product of chunk) {
           const brandId = brandMap.get(product.brand) || null;
@@ -671,7 +672,7 @@ async function executeWooCatalogSync(runId: number, dryRun: boolean) {
             "recorder_specs",
             ["product_id", "technology", "channels", "incoming_bandwidth_mbps", "max_decode_mp", "drive_bays", "max_drive_capacity_tb", "raid_levels", "built_in_poe_ports", "codecs", "max_camera_resolution_mp", "outgoing_bandwidth_mbps", "decode_capacity_mp", "max_simultaneous_decode_channels", "base_power_w", "drive_power_per_bay_w"],
             recorderSpecsData,
-            (r) => [r.product_id, r.technology, r.channels, r.incomingBandwidthMbps, r.maxDecodeMp, r.driveBays, r.maxDriveCapacityTb, r.raidLevels, r.builtInPoePorts, r.codecs, r.maxCameraResolutionMp, r.outgoing_bandwidth_mbps ?? null, r.decode_capacity_mp ?? null, r.max_simultaneous_decode_channels ?? null, r.base_power_w ?? null, r.drive_power_per_bay_w ?? null]
+            recorderSpecValues
           );
         }
 
